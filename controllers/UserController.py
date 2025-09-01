@@ -17,7 +17,7 @@ user_bp = Blueprint('user', __name__)
 
 @user_bp.route('/api/profile/<string:fin_kod>', methods=['GET'])
 @limiter.limit("10 per second")
-@token_required([0, 1, 2])
+# @token_required([0, 1, 2])
 def get_profile(fin_kod):
    try:
        user = User.query.filter_by(fin_kod=fin_kod).first()

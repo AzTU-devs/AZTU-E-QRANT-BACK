@@ -35,6 +35,7 @@ class User(db.Model):
     born_date = db.Column(db.DateTime)
     created_at = db.Column(db.DateTime, nullable=False)
     updated_at = db.Column(db.DateTime)
+    institution_code = db.Column(db.String)
 
     def user_details(self):
         return {
@@ -66,7 +67,7 @@ class User(db.Model):
             "work_email": self.work_email,
             "profile_completed": self.profile_completed,
             "born_date": self.born_date,
-            
+            "institution_code": self.institution_code
         }
     
     def get_user_image(self):

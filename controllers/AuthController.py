@@ -33,7 +33,11 @@ def signup():
             'password', 
             'user_type',
             'project_role',
-            'email'
+            'email',
+            'name',
+            'surname',
+            'father_name',
+            'institution_code'
         ]
 
         for field in required_fields:
@@ -46,6 +50,10 @@ def signup():
         user_type = data.get('user_type')
         project_role = data.get('project_role')
         email = data.get('email')
+        name = data.get('name')
+        surname = data.get('surname')
+        father_name = data.get('father_name')
+        institution_code = data.get('institution_code')
 
         if not all([fin_kod, password, user_type is not None, project_role is not None, email]):
             logger.warning("One or more required fields are empty")
@@ -68,11 +76,15 @@ def signup():
         auth_record.set_password(password)
 
         user_record = User(
+            name=name,
+            surname=surname,
+            father_name=father_name,
             fin_kod=fin_kod,
             profile_completed=0,
             personal_email=email,
             work_email=email,
-            created_at=datetime.utcnow()
+            created_at=datetime.utcnow(),
+            institution_code=institution_code
         )
 
         logger.info("Adding new user and auth records to database")

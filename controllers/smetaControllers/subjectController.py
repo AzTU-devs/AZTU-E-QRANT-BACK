@@ -129,7 +129,6 @@ def update_subject(project_code):
 
 
 @subject_bp.route('/api/delete/smeta/subject/<int:project_code>/<int:id>', methods=['DELETE'])
-@limiter.limit("50 per second")
 @token_required([0, 2])
 def delete_subject(project_code, id):
     try:
