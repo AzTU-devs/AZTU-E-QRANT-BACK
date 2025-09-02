@@ -18,6 +18,7 @@ class Auth(db.Model):
     blocked = db.Column(db.Integer, nullable=False, default=0)
     blocked_at = db.Column(db.DateTime)
     unblocked_at = db.Column(db.DateTime)
+    otp_verificated = db.Column(db.Boolean, default=False)
 
 
     def set_password(self, password):

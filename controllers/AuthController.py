@@ -1,12 +1,13 @@
+import random
 import logging   
-from datetime import datetime
+from models.otpModel import Otp
 from models.authModel import Auth
 from config.limiter import limiter
 from flask_cors import cross_origin
 from models.userModel import db, User
 from utils.email_util import send_email
 from models.projectModel import  Project
-from utils.jwt_util import encode_auth_token
+from datetime import datetime, timedelta
 from exceptions.exception import handle_creation
 from exceptions.exception import handle_conflict
 from exceptions.exception import handle_not_found
@@ -15,6 +16,7 @@ from exceptions.exception import handle_unauthorized
 from flask import Blueprint, request, render_template
 from exceptions.exception import handle_missing_field
 from exceptions.exception import handle_signin_success, handle_success
+from utils.jwt_util import encode_auth_token, encode_otp_token, decode_otp_token
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -266,4 +268,125 @@ def reject_user(fin_kod):
     
     except Exception as e:
         logger.exception("Unexpected error during signin")
+        return {"error": "Internal server error", "message": str(e)}, 500
+
+
+def generateOtp(length: int = 6) -> str:
+    otp = ''.join(str(random.randint(0, 9)) for _ in range(length))
+    return otp
+
+import pytz
+
+@auth_bp.route("/auth/send-otp/<string:fin_kod>", methods=['POST'])
+@limiter.limit("50 per second")
+def send_otp(
+    fin_kod: str
+):
+    try:
+        user = User.query.filter(
+            User.fin_kod == fin_kod
+        ).first()
+
+        if not user:
+            return handle_not_found("User not found.")
+
+        email = user.work_email
+
+        subject = "OTP"
+        recipient = email
+
+        otp = generateOtp()
+
+        baku_tz = pytz.timezone("Asia/Baku")
+        issued_at = datetime.now(baku_tz)
+
+        new_otp = Otp(
+            fin_kod = user.fin_kod,
+            issued_at=issued_at,
+            otp=otp,
+            expires_at=issued_at + timedelta(minutes=5)
+        )
+
+        db.session.add(new_otp)
+        db.session.commit()
+        db.session.refresh(new_otp)
+
+        html_content = render_template("email/otp_verification.html", name=user.name, otp_code=otp)
+        send_email(subject, recipient, html_content)
+
+        return handle_success(fin_kod, "OTP sent successfully")
+    
+    except Exception as e:
+        logger.exception("Unexpected error during signin")
+        return {"error": "Internal server error", "message": str(e)}, 500
+    
+import pytz
+from datetime import datetime
+
+@auth_bp.route("/auth/validate-otp/<string:fin_kod>/<int:otp>", methods=['POST'])
+def validate_otp(fin_kod: str, otp: int):
+    try:
+        user = User.query.filter_by(fin_kod=fin_kod).first()
+        if not user:
+            return handle_not_found("User not found.")
+
+        sent_otp = (
+            Otp.query.filter(Otp.fin_kod == fin_kod)
+            .order_by(Otp.issued_at.desc())
+            .first()
+        )
+
+        if not sent_otp:
+            return handle_not_found("OTP not found.")
+
+        now_utc = datetime.utcnow()
+        otp_expiry = sent_otp.expires_at
+
+        if now_utc > otp_expiry:
+            return {"statusCode": 400, "message": "OTP has expired."}, 400
+
+        if otp != int(sent_otp.otp):
+            return {"statusCode": 400, "message": "Invalid OTP."}, 400
+
+        token = encode_otp_token(user.fin_kod)
+        
+        Otp.query.filter_by(fin_kod=fin_kod).delete()
+        db.session.commit()
+        
+        return handle_success(token, "OTP validated successfully.")
+
+    except Exception as e:
+        logger.exception("Unexpected error during OTP validation")
+        return {"error": "Internal server error", "message": str(e)}, 500
+
+@auth_bp.route("/auth/reset-password", methods=['POST'])
+def reset_password():
+    try:
+        data = request.get_json()
+        if not data or 'password' not in data or 'token' not in data:
+            return handle_missing_field(400)
+
+        password = data['password']
+        token = data['token']
+
+        decoded_data = decode_otp_token(token)
+        if not decoded_data or 'fin_kod' not in decoded_data:
+            return handle_unauthorized(401, "Invalid or expired token.")
+        
+        if not token:
+            return {"status": 403, "message": "token is missing"}
+
+        fin_kod = decoded_data['fin_kod']
+
+        user_auth = Auth.query.filter_by(fin_kod=fin_kod).first()
+        if not user_auth:
+            return {"statusCode": 404, "message": "User not found."}, 404
+
+        user_auth.set_password(password)
+        db.session.commit()
+
+        return handle_success(None, "Password reseted successfully.")
+
+    except Exception as e:
+        logger.exception("Unexpected error during password reset")
         return {"error": "Internal server error", "message": str(e)}, 500
