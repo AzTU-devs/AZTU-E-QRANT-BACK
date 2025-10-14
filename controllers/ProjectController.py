@@ -14,6 +14,7 @@ from models.collaboratorModel import Collaborator
 from flask import Blueprint, request, current_app
 from models.collaboratorModel import Collaborator
 from models.smetaModels.salaryModel import Salary
+from models.projectActivities import ProjectActivities
 from models.smetaModels.subjectModel import SubjectOfPurchase
 from models.smetaModels.other_expensesModel import other_exp_model
 from models.smetaModels.servicesTableModel import ServicesOfPurchase
@@ -26,7 +27,6 @@ def generate_unique_project_code():
         code = random.randint(10000000, 99999999) 
         if not Project.query.filter_by(project_code=code).first():
             return code
-
 
 @project_offer.route('/api/save/project', methods=['POST'])
 @limiter.limit("100 per second")
@@ -485,6 +485,9 @@ def download_pdf(project_code):
 
     # "max_amount_error": max_amount_error
 
+    # project activity query
+    activities = ProjectActivities.query.filter_by(project_code=project_code).all()
+
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
     styles = getSampleStyleSheet()
@@ -612,6 +615,102 @@ def download_pdf(project_code):
     ]))
     elements.append(signature_table)
     elements.append(Spacer(1, 12))
+
+    # activities table
+    # Activities Table Section (refactored for UnboundLocalError and month highlight)
+    elements.append(Spacer(1, 18))
+    elements.append(Paragraph("Layihə Fəaliyyətləri və Aylar üzrə Plan", heading2))
+    elements.append(Spacer(1, 6))
+
+    activity_table_data = []
+    # Header: №, Fəaliyyətlər, Aylar (spanning 12 columns)
+    activity_table_data.append([
+        Paragraph("№", table_heading_style),
+        Paragraph("Fəaliyyətlər", table_heading_style),
+        Paragraph("Aylar", table_heading_style), "", "", "", "", "", "", "", "", "", "", ""
+    ])
+    months_row = ["", ""] + [Paragraph(str(i), table_heading_style) for i in range(1, 13)]
+    activity_table_data.append(months_row)
+
+    activity_table_style = [
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),  # № column
+        ("ALIGN", (1, 0), (1, -1), "LEFT"),    # Fəaliyyətlər column
+        ("ALIGN", (2, 0), (-1, 0), "CENTER"),  # Aylar header
+        ("ALIGN", (2, 1), (-1, 1), "CENTER"),  # Months row
+        ("ALIGN", (2, 2), (-1, -1), "CENTER"), # Activity month cells
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BACKGROUND", (0, 0), (-1, 1), colors.HexColor("#e0e0e0")),
+    ]
+    # Span "Aylar" header cell over columns 2 to 13 (zero-based col 2 to 13)
+    activity_table_style.append(("SPAN", (2, 0), (13, 0)))
+
+    # Prepare list of highlight positions for valid months
+    bg_highlight_positions = []
+    if activities:
+        for idx, activity in enumerate(activities, start=1):
+            row = [
+                Paragraph(str(idx), table_content_style),
+                Paragraph(activity.activity_name or "", table_content_style)
+            ]
+
+            activity_months = []
+            invalid_months = []
+            if hasattr(activity, "month"):
+                # Handle comma-separated string
+                if isinstance(activity.month, str):
+                    for m_str in activity.month.split(','):
+                        m_str = m_str.strip()
+                        if m_str.isdigit():
+                            m = int(m_str)
+                            if 1 <= m <= 12:
+                                activity_months.append(m)
+                            else:
+                                invalid_months.append(m)
+                        else:
+                            invalid_months.append(m_str)
+                elif isinstance(activity.month, list):
+                    for m in activity.month:
+                        if isinstance(m, int):
+                            if 1 <= m <= 12:
+                                activity_months.append(m)
+                            else:
+                                invalid_months.append(m)
+                elif isinstance(activity.month, int):
+                    if 1 <= activity.month <= 12:
+                        activity_months.append(activity.month)
+                    else:
+                        invalid_months.append(activity.month)
+
+            # Build month cells (index 2 to 13 for months 1 to 12)
+            for m in range(1, 13):
+                row.append(Paragraph("", table_content_style))
+            activity_table_data.append(row)
+
+            # For each valid month, add the highlight position for this row and month column
+            for m in activity_months:
+                # Row index in table: idx+1 (header is row 0, months row is 1, data starts at 2)
+                # Column for month m: m+1 (since months start at col 2)
+                activity_table_style.append((
+                    "BACKGROUND", (m+1, idx+1), (m+1, idx+1), colors.HexColor("#d3d3d3")
+                ))
+            # Log invalid months (do not highlight)
+            for m in invalid_months:
+                current_app.logger.warning(f"Activity '{activity.activity_name}' has invalid month: {m}")
+    else:
+        activity_table_data.append([
+            Paragraph("Məlumat yoxdur", table_content_style),
+            "", "", "", "", "", "", "", "", "", "", "", "", ""
+        ])
+        activity_table_style.append(("SPAN", (0, 2), (-1, 2)))
+
+    col_widths = [doc.width * 0.07, doc.width * 0.38] + [doc.width * 0.55 / 12] * 12
+    activity_table = Table(activity_table_data, colWidths=col_widths, repeatRows=2)
+    activity_table.setStyle(TableStyle(activity_table_style))
+    elements.append(activity_table)
+    elements.append(Spacer(1, 18))
 
     img = RLImage(image_file, width=2*inch, height=1*inch)
     elements.append(img)
