@@ -1,16 +1,22 @@
 import random
+import requests
 from extentions.db import db
 from datetime import datetime
 from models.authModel import Auth
 from models.userModel import User
 from config.limiter import limiter
 from models.projectModel import Project
+from models.prioritetModel import Priotet
+from models.smetaModels.rentModel import Rent
 from utils.jwt_required import token_required
 from models.smetaModels.smetaModel import Smeta
 from models.collaboratorModel import Collaborator
 from flask import Blueprint, request, current_app
 from models.collaboratorModel import Collaborator
 from models.smetaModels.salaryModel import Salary
+from models.smetaModels.subjectModel import SubjectOfPurchase
+from models.smetaModels.other_expensesModel import other_exp_model
+from models.smetaModels.servicesTableModel import ServicesOfPurchase
 from exceptions.exception import handle_missing_field, handle_specific_not_found, handle_success, handle_global_exception
 
 project_offer = Blueprint('project_offer', __name__)
@@ -188,15 +194,19 @@ def get_project_by_fin_kod(fin_kod):
 @limiter.limit("100 per second")
 @token_required([0, 1, 2])
 def project_by_project_code(project_code):
-
     try:
-        
         project = Project.query.filter_by(project_code=project_code).first()
 
         if not project:
             return handle_specific_not_found("Project not found.")
         
-        return handle_success(project.project_detail(), "Project data fetched succesfully.")
+        priotet_obj = Priotet.query.filter_by(prioritet_code=project.priotet).first()
+        priotet_name = priotet_obj.prioritet_name if priotet_obj else None
+
+        project_data = project.project_detail()
+        project_data["priotet_name"] = priotet_name
+
+        return handle_success(project_data, "Project data fetched successfully.")
     
     except Exception as e:
         return handle_global_exception(str(e))
@@ -368,7 +378,7 @@ def submit_project():
 def collaborator_projet(fin_kod):
     collaborator = Collaborator.query.filter_by(fin_kod=fin_kod).first()
     
-    if not collaborator:
+    if not collaborator or not collaborator.approved:
         return {'error': 'Collaborator not found'}, 404
     
     return {
@@ -409,3 +419,678 @@ def get_project_owner(project_code):
             "image": owner.get_user_image()
         }
     }, 200
+
+
+# pdf export new
+
+from io import BytesIO
+from flask import make_response
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus.flowables import HRFlowable
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image as RLImage
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase import pdfmetrics
+
+@project_offer.route("/api/project-pdf/<int:project_code>", methods=["GET"])
+@limiter.limit("100 per second")
+# @token_required([0, 1, 2])
+def download_pdf(project_code):
+    # Register the local Noto Sans font (supports Azerbaijani letters)
+    font_name = "NotoSans"
+    try:
+        # Use local path for NotoSans-Regular.ttf
+        font_path = "./utils/noto_sans/static/NotoSans-Regular.ttf"
+        pdfmetrics.registerFont(TTFont(font_name, font_path))
+    except Exception as e:
+        return {
+            "status": 500,
+            "message": f"Failed to register local font: {str(e)}"
+        }, 500
+
+    project = Project.query.filter_by(project_code=project_code).first()
+    if not project:
+        return {
+            "status": 404,
+            "message": "Project not found."
+        }, 404
+    
+    # smeta logic to get total and each smeta values
+    
+    main_smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
+
+    total_main_amount = sum([
+        main_smeta.total_salary or 0,
+        main_smeta.total_equipment or 0,
+        main_smeta.total_fee or 0,
+        main_smeta.defense_fund or 0,
+        main_smeta.total_services or 0,
+        main_smeta.total_rent or 0,
+        main_smeta.other_expenses or 0
+    ])
+
+    # equipment smeta
+    subject_smeta = SubjectOfPurchase.query.filter_by(project_code=project_code).all()
+
+    # service smeta
+    service_smeta = ServicesOfPurchase.query.filter_by(project_code=project_code).all()
+
+    # rent smeta
+    rent_smeta = Rent.query.filter_by(project_code=project_code).all()
+
+    # other expenses smeta
+    other_exps = other_exp_model.query.filter_by(project_code=project_code).all()
+
+    # "max_amount_error": max_amount_error
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    styles = getSampleStyleSheet()
+    # All styles use NotoSans font for Unicode Azerbaijani support
+    heading1 = ParagraphStyle(
+        "Heading1Custom",
+        parent=styles["Heading1"],
+        fontName=font_name,
+        fontSize=18,
+        alignment=1,  # center
+        spaceAfter=12,
+    )
+    heading2 = ParagraphStyle(
+        "Heading2Custom",
+        parent=styles["Heading2"],
+        fontName=font_name,
+        fontSize=14,
+        alignment=1,  # center
+        spaceAfter=12,
+    )
+    title_style = ParagraphStyle(
+        "TitleCustom",
+        parent=styles["Title"],
+        fontName=font_name,
+        fontSize=12,
+        alignment=1,  # center
+        spaceAfter=12,
+    )
+    table_heading_style = ParagraphStyle(
+        "TableHeadingCustom",
+        fontName=font_name,
+        fontSize=11,
+        alignment=1,  # center
+        leading=14,
+    )
+    table_content_style = ParagraphStyle(
+        "TableContentCustom",
+        fontName=font_name,
+        fontSize=11,
+        alignment=0,  # left
+        leading=14,
+        wordWrap='CJK',
+    )
+
+    elements = []
+
+    response = requests.get("https://imgs.search.brave.com/01EIyM_Lh6guT11HMah-gFja9fDwhkYJKWWue9Wh_Zw/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly93d3cu/b3BlbmFpcmUuZXUv/dGVtcGxhdGVzL3lv/b3RoZW1lL2NhY2hl/LzBmL2F6dHUtbG9n/by0tMGYyZjMwY2Mu/cG5n")
+    image_file = BytesIO(response.content)
+    img = RLImage(image_file, width=2*inch, height=1*inch)
+    elements.append(img)
+    elements.append(Spacer(1, 12))
+
+    text_under_image = "AZƏRBAYCAN TEXNİKİ UNİVERSİTETİ"
+    elements.append(Paragraph(text_under_image, heading1))
+    elements.append(Spacer(1, 12))
+
+    heading_2 = "DAXİLİ QRANT MÜSABİQƏSİ"
+    elements.append(Paragraph(heading_2, heading2))
+    elements.append(Spacer(1, 12))
+
+    heading_3 = "LAYİHƏ MÜSABİQƏSİ"
+    elements.append(Paragraph(heading_3, heading2))
+    elements.append(Spacer(1, 12))
+
+    elements.append(HRFlowable(width="100%", thickness=1, lineCap='round', color=colors.black, spaceBefore=6, spaceAfter=6))
+    elements.append(Spacer(1, 12))
+
+    heading_1 = "LAYİHƏ TƏKLİFİ FORMASI"
+    elements.append(Paragraph(heading_1, heading1))
+    elements.append(Spacer(1, 12))
+
+    elements.append(Paragraph(f"(layihənin  məzmunu və əsaslandırılması)", title_style))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph(f"(həcmi –  səhifədən artıq olmamaqla; 12 ölçülü TNR şrifti ilə, 1 intervalla yazılmalıdır)", title_style))
+    elements.append(Spacer(1, 12))
+
+    project_fields = [
+        ("1. Layihə adı", project.project_name),
+        ("2. Layihənin məqsədi, qarşıya qoyulan məsələlərin, aktuallığının əsaslandırılması (2-5 səhifə) Layihənin məqsədini ifadə edin. Layihədə həllinə çalışmaq istədiyiniz problemi (məsələni) təsvir edin. Problemin elmi-tədqiqatın inkişafı üçün aktual olduğunu əsaslandırın.", project.project_purpose),
+        ("3. Layihənin annotasiyası (0,5-1 səhifə)", project.project_annotation),
+        ("4. Layihənin məzmununu tam əks etdirən açar sözlər Layihədə əsas açar sözləri qeyd edin.", project.project_key_words),
+        ("5. Layihənin elmi ideyası; (1-2 səhifə)", project.project_scientific_idea),
+        ("6. Layihə üzrə tədqiqatın strukturu  (1-2 səhifə) (işin planı, mərhələləri və tədqiqat üsulları göstərilməlidir)", project.project_structure),
+        ("7. Elmi kollektivin xarakterizə edilməsi (layihə rəhbəri və icraçılarının ixtisasları və onların layihə mövzusuna uyğunluq dərəcəsi; əvvəllər həmin sahədə tədqiqat aparmaq təcrübəsi ölkədaxili, regional və beynəlxalq qrant müsabiqələri çərçivəsində; layihə mövzusu üzrə iştirakçıların əsas elmi əsərləri, 8-dan artıq olmamaq şərtilə)", project.team_characterization),
+        ("8. Layihənin monitorinqi və davamlılığı (1-2 səhifə) Layihənin icrası və nəticələri haqqında ictimaiyyətin məlumatlandırılması və informasiya əldə edilməsi yollarını göstərin. Layihənin icrası başa çatdıqdan sonra onun davamlılığının təmin olunması istiqamətində görəcəyiniz işləri qeyd edin.", project.project_monitoring),
+        ("9. Layihənin qiymətləndirilməsi və hesabatlılığı (1-2 səhifə) Layihənin qiymətləndirilməsi meyarlarını və hesabatlılıq formalarını qeyd edin. Nail olunmuş dəyişikliyin hansı meyarlar əsasında müəyyənləşdiriləcəyini izah edin.", project.project_assessment),
+        ("10. Layihə üzrə elmi-tədqiqat işinin yerinə yetirilməsi üçün lazım olan avadanlıq, cihaz və qurğulardan mövcud olanlar haqqında məlumat, əlavə lazım olanların əsaslandırılması", project.project_requirements),
+    ]
+
+    for field_name, value in project_fields:
+        data = [
+            [Paragraph(field_name, table_heading_style)],
+            [Paragraph(value or "—", table_content_style)]
+        ]
+        table = Table(data, colWidths=[6.5 * inch])
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d3d3d3")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+            ("FONTNAME", (0, 0), (-1, 0), font_name),
+            ("FONTNAME", (0, 1), (-1, -1), font_name),
+            ("ALIGN", (0, 0), (-1, 0), "LEFT"),
+            ("ALIGN", (0, 1), (-1, -1), "LEFT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(table)
+        elements.append(Spacer(1, 12))
+    
+    signature_table_data = [
+        [
+            Paragraph("İmza: ____________________", table_content_style),
+            Paragraph("Ad, Soyad, Ata adı: ____________________", table_content_style),
+        ]
+    ]
+    signature_table = Table(signature_table_data, colWidths=[3.25 * inch, 3.25 * inch])
+    signature_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(signature_table)
+    elements.append(Spacer(1, 12))
+
+    img = RLImage(image_file, width=2*inch, height=1*inch)
+    elements.append(img)
+    elements.append(Spacer(1, 12))
+
+    # table for smeta details
+
+    text_under_image = "AZƏRBAYCAN TEXNİKİ UNİVERSİTETİ"
+    elements.append(Paragraph(text_under_image, heading1))
+    elements.append(Spacer(1, 12))
+
+    heading_2 = "DAXİLİ QRANT MÜSABİQƏSİ"
+    elements.append(Paragraph(heading_2, heading2))
+    elements.append(Spacer(1, 12))
+
+    heading_3 = "LAYİHƏ MÜSABİQƏSİ"
+    elements.append(Paragraph(heading_3, heading2))
+    elements.append(Spacer(1, 12))
+
+    elements.append(HRFlowable(width="100%", thickness=1, lineCap='round', color=colors.black, spaceBefore=6, spaceAfter=6))
+    elements.append(Spacer(1, 12))
+
+    heading_1 = "LAYİHƏNİN SMETA DƏYƏRİNİN HESABLANMASI"
+    elements.append(Paragraph(heading_1, heading1))
+    elements.append(Spacer(1, 12))
+
+    elements.append(Paragraph(f"Bu Forma 12 ölçülü TNR şrifti ilə, 1 intervalla doldurulmalıdır", title_style))
+    elements.append(Spacer(1, 12))
+
+    elements.append(Paragraph(f"<b>Diqqət! Bütün xərc maddələri qanunvericilikdə nəzərdə tutulmuş vergilər, rüsumlar, lisenziya haqları, sığorta məbləği və digər ödənişlər əlavə olunmaqla və açıq şəkildə göstərilməklə yazılmalıdır</b>", title_style))
+    elements.append(Spacer(1, 12))
+
+    heading_4 = "Layihənin xərclər smetası (manatla)"
+    elements.append(Paragraph(heading_4, heading2))
+    elements.append(Spacer(1, 12))
+
+    # Add table with 3 headers and 8 rows of sample data
+
+    smeta_table_data = [
+        [
+            Paragraph("Xərc maddələrinin adları", table_heading_style),
+            Paragraph("Layihə üzrə cəmi", table_heading_style)
+        ],
+        [
+            Paragraph("1. Layihə rəhbərinin və icraçıların xidmət haqları", table_content_style),
+            Paragraph(str(main_smeta.total_salary), table_content_style)
+        ],
+        [
+            Paragraph("2. Layihə üzrə vergilər və digər məcburi  ödənişlər", table_content_style),
+            Paragraph(str(main_smeta.total_fee), table_content_style)
+        ],
+        [
+            Paragraph("3. Dövlət Sosial Müdafiə Fonduna ayırmalar ", table_content_style),
+            Paragraph(str(main_smeta.defense_fund), table_content_style)
+        ],
+        [
+            Paragraph("4. Avadanlıq, cihaz, qurğu və mal-materialların satınalınması* (vergilər və digər məcburi ödənişlər daxil olmaqla)**", table_content_style),
+            Paragraph(str(main_smeta.total_equipment), table_content_style)
+        ],
+        [
+            Paragraph("5. İşlərin və xidmətlərin satınalınması (çatdırılma, quraşdırılma, sazlanma, sınaqdan keçirilmə, treninqlər və s.)", table_content_style),
+            Paragraph(str(main_smeta.total_services), table_content_style)
+        ],
+        [
+            Paragraph("6. İcarə", table_content_style),
+            Paragraph(str(main_smeta.total_rent), table_content_style)
+        ],
+        [
+            Paragraph("7. Digər birbaşa xərclər", table_content_style),
+            Paragraph(str(main_smeta.other_expenses), table_content_style)
+        ],
+        [
+            Paragraph("Cəmi:", table_content_style),
+            Paragraph(str(total_main_amount), table_content_style)
+        ],
+    ]
+
+    # Set table width to 100% of page width by using doc.width, divide proportionally
+    col1_width = doc.width * 0.65
+    col2_width = doc.width * 0.35
+    smeta_table = Table(smeta_table_data, colWidths=[col1_width, col2_width])
+    smeta_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d3d3d3")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("ALIGN", (0, 0), (-1, 0), "CENTER"),
+        ("ALIGN", (0, 1), (-1, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    elements.append(smeta_table)
+
+    elements.append(Paragraph(f"* Lazım gəldikdə sətirlər əlavə oluna bilər.", title_style))
+    elements.append(Spacer(1, 12))
+
+    elements.append(Paragraph(f"** Xidmət haqqına aşağıdakı ayırmalar daxildir:", title_style))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph(f"** Xidmət haqqına aşağıdakı ayırmalar daxildir:", title_style))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph(f"- Məcburi dövlət sosial sığorta haqqı – 100 manat", title_style))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph(f"- İcbari tibbi sığorta fonduna aylıq ödəniş – 16 manat (“Sosial sığorta haqqında” AR Milli Məclisin 18 fevral 1997-ci il tarixli qanunu).", title_style))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph(f"- Gəlir vergisi – 5%;", title_style))
+    elements.append(Spacer(1, 12))
+    elements.append(Paragraph(f"- Nağdlaşdırma komissiyası – 1.5%.", title_style))
+    elements.append(Spacer(1, 12))
+
+    heading_5 = "Əlavə 2. Avadanlıq, cihaz, qurğu və mal-materialların satınalınması"
+    elements.append(Paragraph(heading_5, heading2))
+    elements.append(Spacer(1, 12))
+
+    table_data = [
+        [Paragraph("Satınalınma predmeti ", table_heading_style)],
+        [
+            Paragraph("№", table_heading_style),
+            Paragraph("Avadanlıq, cihaz, qurğu və mal-materialların adları*", table_heading_style),
+            Paragraph("Ölçü vahidi", table_heading_style),
+            Paragraph("Vahidin qiyməti (manat)", table_heading_style),
+            Paragraph("Miqdarı", table_heading_style),
+            Paragraph("Cəmi məbləğ (manat)", table_heading_style)
+        ]
+    ]
+
+    total_subject_sum = 0
+
+    if subject_smeta:
+        for idx, subject in enumerate(subject_smeta, start=1):
+            table_data.append([
+                Paragraph(str(idx), table_content_style),
+                Paragraph(subject.equipment_name, table_content_style),
+                Paragraph(subject.unit_of_measure, table_content_style),
+                Paragraph(str(subject.price), table_content_style),
+                Paragraph(str(subject.quantity), table_content_style),
+                Paragraph(str(subject.total_amount), table_content_style)
+            ])
+            total_subject_sum += subject.total_amount
+
+        # Footer row for total
+        table_data.append([
+            Paragraph("<b>Cəmi:</b>", table_heading_style),
+            "", "", "", "",
+            Paragraph(f"<b>{total_subject_sum}</b>", table_heading_style)
+        ])
+    else:
+        table_data.append([
+            Paragraph("Məlumat yoxdur", table_content_style),
+            "", "", "", "", ""
+        ])
+
+    two_header_table = Table(table_data, colWidths=[doc.width / 6] * 6)
+    table_style_commands = [
+        ("SPAN", (0, 0), (-1, 0)),
+        ("BACKGROUND", (0, 0), (-1, 1), colors.HexColor("#e0e0e0")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+    ]
+    if not subject_smeta:
+        table_style_commands.append(("SPAN", (0, 2), (-1, 2)))
+    two_header_table.setStyle(TableStyle(table_style_commands))
+    elements.append(two_header_table)
+    elements.append(Spacer(1, 12))
+
+    heading_6 = "Əlavə 3. İşlərin və xidmətlərin satınalınması"
+    elements.append(Paragraph(heading_6, heading2))
+    elements.append(Spacer(1, 12))
+
+    table_data = [
+        [Paragraph("İşlərin və xidmətlərin (vergilər və sair  xərclər daxil olmaqla) satınalması xərclərinin hesablanması", table_heading_style)],
+        [
+            Paragraph("№", table_heading_style),
+            Paragraph("İş və xidmətlərin adları*", table_heading_style),
+            Paragraph("Ölçü vahidi", table_heading_style),
+            Paragraph("Vahidin qiyməti (manat)", table_heading_style),
+            Paragraph("Miqdarı", table_heading_style),
+            Paragraph("Cəmi məbləğ (manat)", table_heading_style)
+        ]
+    ]
+
+    total_services_sum = 0
+
+    if service_smeta:
+        for idx, service in enumerate(service_smeta, start=1):
+            table_data.append([
+                Paragraph(str(idx), table_content_style),
+                Paragraph(service.services_name, table_content_style),
+                Paragraph(service.unit_of_measure, table_content_style),
+                Paragraph(str(service.price), table_content_style),
+                Paragraph(str(service.quantity), table_content_style),
+                Paragraph(str(service.total_amount), table_content_style)
+            ])
+            total_services_sum += service.total_amount
+
+        # Footer row for total
+        table_data.append([
+            Paragraph("<b>Cəmi:</b>", table_heading_style),
+            "", "", "", "",
+            Paragraph(f"<b>{total_services_sum}</b>", table_heading_style)
+        ])
+    else:
+        table_data.append([
+            Paragraph("Məlumat yoxdur", table_content_style),
+            "", "", "", "", ""
+        ])
+
+    services_table = Table(table_data, colWidths=[doc.width / 6] * 6)
+    services_style = [
+        ("SPAN", (0, 0), (-1, 0)),
+        ("BACKGROUND", (0, 0), (-1, 1), colors.HexColor("#e0e0e0")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+    ]
+    if not service_smeta:
+        services_style.append(("SPAN", (0, 2), (-1, 2)))
+    services_table.setStyle(TableStyle(services_style))
+    elements.append(services_table)
+    elements.append(Spacer(1, 12))
+
+    # 4
+    heading_7 = "Əlavə 4. Layihə üzrə icarə xərcləri"
+    elements.append(Paragraph(heading_7, heading2))
+    elements.append(Spacer(1, 12))
+
+    table_data = [
+        [
+            Paragraph("№", table_heading_style),
+            Paragraph("İcarəyə götürüləcək daşınar və daşınmaz əmlakın adı*", table_heading_style),
+            Paragraph("Ölçü vahidi", table_heading_style),
+            Paragraph("Vahidin qiyməti (manat)", table_heading_style),
+            Paragraph("Miqdarı", table_heading_style),
+            Paragraph("Müddət (ay)", table_heading_style),
+            Paragraph("Cəmi məbləğ (manat)", table_heading_style)
+        ]
+    ]
+
+    total_rent_sum = 0
+
+    if rent_smeta:
+        for idx, rent in enumerate(rent_smeta, start=1):
+            table_data.append([
+                Paragraph(str(idx), table_content_style),
+                Paragraph(rent.rent_area, table_content_style),
+                Paragraph(rent.unit_of_measure, table_content_style),
+                Paragraph(str(rent.unit_price), table_content_style),
+                Paragraph(str(rent.quantity), table_content_style),
+                Paragraph(str(rent.duration), table_content_style),
+                Paragraph(str(rent.total_amount), table_content_style)
+            ])
+            total_rent_sum += rent.total_amount
+
+        # Footer for total
+        table_data.append([
+            Paragraph("<b>Cəmi:</b>", table_heading_style),
+            "", "", "", "", "",
+            Paragraph(f"<b>{total_rent_sum}</b>", table_heading_style)
+        ])
+    else:
+        table_data.append([
+            Paragraph("Məlumat yoxdur", table_content_style),
+            "", "", "", "", "", ""
+        ])
+
+    rent_table = Table(table_data, colWidths=[doc.width / 7] * 7)
+    rent_style = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e0e0e0")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+    ]
+    if not rent_smeta:
+        rent_style.append(("SPAN", (0, 1), (-1, 1)))
+    rent_table.setStyle(TableStyle(rent_style))
+    elements.append(rent_table)
+    elements.append(Spacer(1, 12))
+
+    # 5
+    heading_8 = "Əlavə 5. Digər birbaşa xərclər"
+    elements.append(Paragraph(heading_8, heading2))
+    elements.append(Spacer(1, 12))
+
+    table_data = [
+        [
+            Paragraph("№", table_heading_style),
+            Paragraph("Xərc maddələrinin adı*", table_heading_style),
+            Paragraph("Ölçü vahidi", table_heading_style),
+            Paragraph("Vahidin qiyməti (manat)", table_heading_style),
+            Paragraph("Miqdarı", table_heading_style),
+            Paragraph("Müddət (ay)", table_heading_style),
+            Paragraph("Cəmi məbləğ (manat)", table_heading_style)
+        ]
+    ]
+
+    total_other_exp_sum = 0
+
+    if other_exps:
+        for idx, exp in enumerate(other_exps, start=1):
+            table_data.append([
+                Paragraph(str(idx), table_content_style),
+                Paragraph(exp.expenses_name, table_content_style),
+                Paragraph(exp.unit_of_measure, table_content_style),
+                Paragraph(str(exp.unit_price), table_content_style),
+                Paragraph(str(exp.quantity), table_content_style),
+                Paragraph(str(exp.duration), table_content_style),
+                Paragraph(str(exp.total_amount), table_content_style)
+            ])
+            total_other_exp_sum += exp.total_amount
+
+        # Footer for total
+        table_data.append([
+            Paragraph("<b>Cəmi:</b>", table_heading_style),
+            "", "", "", "", "",
+            Paragraph(f"<b>{total_other_exp_sum}</b>", table_heading_style)
+        ])
+    else:
+        table_data.append([
+            Paragraph("Məlumat yoxdur", table_content_style),
+            "", "", "", "", "", ""
+        ])
+
+    other_exp_table = Table(table_data, colWidths=[doc.width / 7] * 7)
+    other_exp_style = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e0e0e0")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+    ]
+    if not other_exps:
+        other_exp_style.append(("SPAN", (0, 1), (-1, 1)))
+    other_exp_table.setStyle(TableStyle(other_exp_style))
+    elements.append(other_exp_table)
+    elements.append(Spacer(1, 12))
+
+    signature_table_data = [
+        [
+            Paragraph("İmza: ____________________", table_content_style),
+            Paragraph("Ad, Soyad, Ata adı: ____________________", table_content_style),
+        ]
+    ]
+    signature_table = Table(signature_table_data, colWidths=[3.25 * inch, 3.25 * inch])
+    signature_table.setStyle(TableStyle([
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(signature_table)
+    elements.append(Spacer(1, 12))
+
+    doc.build(elements)
+    pdf_data = buffer.getvalue()
+    buffer.close()
+
+    response = make_response(pdf_data)
+    response.headers["Content-Type"] = "application/pdf"
+    response.headers["Content-Disposition"] = f"attachment; filename=project_{project_code}.pdf"
+    return response
+
+
+from io import BytesIO
+from flask import send_file
+import pandas as pd
+
+@project_offer.route("/api/project-excel/<int:project_code>", methods=["GET"])
+def download_excel(project_code):
+    # Fetch project and smetas
+    project = Project.query.filter_by(project_code=project_code).first()
+    if not project:
+        return {"status": 404, "message": "Project not found."}, 404
+
+    subject_smeta = SubjectOfPurchase.query.filter_by(project_code=project_code).all()
+    service_smeta = ServicesOfPurchase.query.filter_by(project_code=project_code).all()
+    rent_smeta = Rent.query.filter_by(project_code=project_code).all()
+    other_exps = other_exp_model.query.filter_by(project_code=project_code).all()
+
+    output = BytesIO()
+
+    # Use context manager to avoid writer.save()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        # Subject sheet
+        if subject_smeta:
+            df_subject = pd.DataFrame([{
+                "№": idx + 1,
+                "Equipment Name": s.equipment_name,
+                "Unit": s.unit_of_measure,
+                "Price": s.price,
+                "Quantity": s.quantity,
+                "Total": s.total_amount
+            } for idx, s in enumerate(subject_smeta)])
+        else:
+            df_subject = pd.DataFrame([{"Message": "No data"}])
+        df_subject.to_excel(writer, sheet_name="Subject of Purchase", index=False)
+
+        # Services sheet
+        if service_smeta:
+            df_services = pd.DataFrame([{
+                "№": idx + 1,
+                "Service Name": s.services_name,
+                "Unit": s.unit_of_measure,
+                "Price": s.price,
+                "Quantity": s.quantity,
+                "Total": s.total_amount
+            } for idx, s in enumerate(service_smeta)])
+        else:
+            df_services = pd.DataFrame([{"Message": "No data"}])
+        df_services.to_excel(writer, sheet_name="Services of Purchase", index=False)
+
+        # Rent sheet
+        if rent_smeta:
+            df_rent = pd.DataFrame([{
+                "№": idx + 1,
+                "Rent Area": r.rent_area,
+                "Unit": r.unit_of_measure,
+                "Unit Price": r.unit_price,
+                "Quantity": r.quantity,
+                "Duration": r.duration,
+                "Total": r.total_amount
+            } for idx, r in enumerate(rent_smeta)])
+        else:
+            df_rent = pd.DataFrame([{"Message": "No data"}])
+        df_rent.to_excel(writer, sheet_name="Rent", index=False)
+
+        # Other Expenses sheet
+        if other_exps:
+            df_other = pd.DataFrame([{
+                "№": idx + 1,
+                "Expense Name": e.expenses_name,
+                "Unit": e.unit_of_measure,
+                "Price": e.unit_price,
+                "Quantity": e.quantity,
+                "Duration": e.duration,
+                "Total": e.total_amount
+            } for idx, e in enumerate(other_exps)])
+        else:
+            df_other = pd.DataFrame([{"Message": "No data"}])
+        df_other.to_excel(writer, sheet_name="Other Expenses", index=False)
+
+        # Salary sheet
+        salary_smeta = Salary.query.filter_by(project_code=project_code).all()
+        if salary_smeta:
+            df_salary = pd.DataFrame([{
+                "№": idx + 1,
+                "FIN KOD": s.fin_kod,
+                "Salary per Month": s.salary_per_month,
+                "Months": s.months,
+                "Total Salary": s.total_salary
+            } for idx, s in enumerate(salary_smeta)])
+        else:
+            df_salary = pd.DataFrame([{"Message": "No data"}])
+        df_salary.to_excel(writer, sheet_name="Salary", index=False)
+
+    # Prepare file for download
+    output.seek(0)
+    return send_file(
+        output,
+        as_attachment=True,
+        download_name=f"project_{project_code}_smeta.xlsx",
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )

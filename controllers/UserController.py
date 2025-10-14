@@ -2,6 +2,7 @@ import logging
 from extentions.db import db
 from datetime import datetime
 from models.userModel import User
+from models.authModel import Auth
 from config.limiter import limiter
 from flask import Blueprint, request
 from utils.jwt_required import token_required
@@ -49,7 +50,7 @@ def complete_profile():
         print("Received files:", request.files)
         
         required_fields = [
-            'fin_kod', 'name', 'surname', 'father_name', 'born_place',
+            'born_place',
             'living_location', 'home_phone', 'personal_mobile_number', 'personal_email',
             'citizenship', 'personal_id_number', 'sex', 'work_place', 'department',
             'duty', 'main_education', 'additonal_education', 'scientific_degree',
@@ -80,10 +81,7 @@ def complete_profile():
             logger.warning(f"No user found with FIN: {fin_kod}")
             print("No user found with FIN:", fin_kod)
             return handle_not_found(404)
-
-        user.name = data.get('name')
-        user.surname = data.get('surname')
-        user.father_name = data.get('father_name')
+        
         user.image = image_bytes
         user.born_place = data.get('born_place')
         user.living_location = data.get('living_location')
@@ -114,3 +112,37 @@ def complete_profile():
     except Exception as e:
         logger.exception("An unexpected error occurred while completing the profile")
         return {"error": "Internal server error", "message": str(e)}, 500
+
+@user_bp.route("/api/users/all", methods=['GET'])
+@limiter.limit("100 per second")
+def get_all_approved_user():
+    try:
+        name = request.args.get("name")
+        surname = request.args.get("surname")
+        fin_kod = request.args.get("finKod")
+
+        query = Auth.query.filter(Auth.approved == True)
+        if fin_kod:
+            query = query.filter(Auth.fin_kod.ilike(f"%{fin_kod}%"))
+
+        auth_users = query.all()
+
+        if not auth_users:
+            return handle_not_found("User not found.")
+
+        users = []
+        for auth_user in auth_users:
+            user_query = User.query.filter_by(fin_kod=auth_user.fin_kod)
+            if name:
+                user_query = user_query.filter(User.name.ilike(f"%{name}%"))
+            if surname:
+                user_query = user_query.filter(User.surname.ilike(f"%{surname}%"))
+            user = user_query.first()
+            if user:
+                user_details = user.user_details()
+                user_details["project_role"] = auth_user.project_role
+                users.append(user_details)
+
+        return handle_success(users, "Users fetched successfully")
+    except Exception as e:
+        return handle_global_exception(str(e))

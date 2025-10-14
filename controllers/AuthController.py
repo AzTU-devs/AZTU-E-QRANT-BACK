@@ -8,6 +8,7 @@ from models.userModel import db, User
 from utils.email_util import send_email
 from models.projectModel import  Project
 from datetime import datetime, timedelta
+from utils.jwt_required import token_required
 from exceptions.exception import handle_creation
 from exceptions.exception import handle_conflict
 from exceptions.exception import handle_not_found
@@ -136,7 +137,7 @@ def signin():
             logger.warning("No auth record found for FIN: %s", fin_kod)
             return handle_unauthorized(401, "Invalid FIN code or user not found.")
 
-        if not auth_data.check_password(password) or not auth_data.approved or auth_data.blocked:
+        if not auth_data.check_password(password) or not auth_data.approved or auth_data    .blocked:
             logger.warning("Incorrect password for FIN: %s", fin_kod)
             return handle_unauthorized(401, "Incorrect password.")
 
@@ -389,4 +390,25 @@ def reset_password():
 
     except Exception as e:
         logger.exception("Unexpected error during password reset")
+        return {"error": "Internal server error", "message": str(e)}, 500
+
+@auth_bp.route("/auth/<string:fin_kod>/update/role/<int:role>", methods=['POST'])
+@limiter.limit("100 per second")
+@token_required([2])
+def update_role(fin_kod, role):
+    try:
+        user = Auth.query.filter_by(fin_kod=fin_kod).first()
+
+        if not user:
+            return handle_not_found("User not found.")
+        
+        user.project_role = int(role)
+
+        db.session.commit()
+        db.session.refresh(user)
+
+        return handle_success(user.auth_details(), "User role updated successfully")
+    
+    except Exception as e:
+        logger.exception("Unexpected error during role update")
         return {"error": "Internal server error", "message": str(e)}, 500
