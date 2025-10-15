@@ -33,7 +33,7 @@ def create_activity():
 @project_activity.route('/api/project-activity/<int:project_code>', methods=['GET'])
 def get_activities_by_project_code(project_code):
     try:
-        activities = ProjectActivities.query.filter_by(project_code=project_code).all()
+        activities = ProjectActivities.query.filter_by(project_code=project_code).order_by(ProjectActivities.month.asc()).all()
 
         if not activities:
             return jsonify({"message": "No activities found for this project code"}), 404
