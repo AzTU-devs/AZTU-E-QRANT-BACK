@@ -111,3 +111,21 @@ def update_activity(id):
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@project_activity.route('/api/project-activity/delete/<int:id>', methods=['DELETE'])
+def delete_activity(id):
+    try:
+        activity = ProjectActivities.query.get(id)
+        if not activity:
+            return jsonify({"message": "Activity not found"}), 404
+
+        db.session.delete(activity)
+        db.session.commit()
+
+        return jsonify({
+            "message": f"Project activity with ID {id} deleted successfully",
+            "status_code": 200
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500

@@ -47,7 +47,7 @@ def main_app():
     	origins="*",
     	supports_credentials=True,
     	allow_headers=["Content-Type", "Authorization", "Content-Disposition"],
-    	methods=["GET", "POST", "PATCH", "OPTIONS", "DELETE"]
+    	methods=["GET", "POST", "PUT", "PATCH", "OPTIONS", "DELETE"]
 	)
 
     db.init_app(app)

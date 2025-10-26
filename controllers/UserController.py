@@ -27,6 +27,41 @@ def get_profile(fin_kod):
        return handle_success(user.user_details(), "User found successfully.")  
    except Exception as e:
        return handle_global_exception(str(e))
+
+@user_bp.route('/api/profile/<string:fin_kod>/edit', methods=['PUT'])
+@limiter.limit("10 per second")
+@token_required([0, 1, 2])
+def edit_user_details(fin_kod):
+    try:
+        data = request.get_json()
+        user = User.query.filter_by(fin_kod=fin_kod).first()
+        if not user:
+            return handle_not_found(404)
+
+        # Fields editable (same as complete_profile, minus personal_email, personal_mobile_number, institution_code, fin_kod)
+        editable_fields = [
+            "name", "surname", "father_name", "born_place", "living_location",
+            "home_phone", "citizenship", "personal_id_number", "sex",
+            "work_place", "department", "duty", "main_education",
+            "additonal_education", "scientific_degree", "scientific_date",
+            "scientific_name", "scientific_name_date", "work_location",
+            "work_phone", "work_email", "born_date"
+        ]
+
+        for field in editable_fields:
+            if field in data:
+                if field in ["scientific_date", "scientific_name_date", "born_date"] and data[field]:
+                    try:
+                        setattr(user, field, datetime.strptime(data[field], "%Y-%m-%d"))
+                    except ValueError:
+                        continue
+                else:
+                    setattr(user, field, data[field])
+
+        db.session.commit()
+        return handle_success(user.user_details(), "User details updated successfully.")
+    except Exception as e:
+        return handle_global_exception(str(e))
    
 @user_bp.route('/api/profile/image/<string:fin_kod>', methods=['GET'])
 @limiter.limit("10 per second")
