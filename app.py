@@ -8,6 +8,7 @@ from config.limiter import limiter
 from extentions.db import migrate, db
 from controllers.AuthController import auth_bp
 from controllers.UserController import user_bp
+from controllers.lockController import lock_bp
 from controllers.ExpertController import expert_bp
 from controllers.PriotetController import priotet_bp
 from controllers.ProjectController import project_offer
@@ -57,6 +58,7 @@ def main_app():
         db.create_all()
 
     app.register_blueprint(auth_bp)
+    app.register_blueprint(lock_bp)
     app.register_blueprint(user_bp)
     app.register_blueprint(rent_bp)
     app.register_blueprint(smeta_bp)

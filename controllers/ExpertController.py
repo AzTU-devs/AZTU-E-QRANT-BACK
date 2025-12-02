@@ -78,11 +78,11 @@ def set_expert():
 
         subject = "Ekspert Təyinatı"
         recipient = data['email']
-        html_content = render_template("set_expert_email.html", project=project)
+        html_content = render_template("/email/set_expert_template.html")
         send_email(subject, recipient, html_content)
 
         print("[DEBUG] Expert set successfully.")
-        return handle_success("Expert setted successfully.")
+        return handle_success(project, "Expert setted successfully.")
     
     except Exception as e:
         print(f"[ERROR] set_expert failed: {e}")

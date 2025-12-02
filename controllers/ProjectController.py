@@ -173,6 +173,42 @@ def get_projects():
     except Exception as e:
         current_app.logger.error(f"Exception in /api/projects: {e}", exc_info=True)
         return handle_global_exception(str(e))
+
+# new submitted users api
+
+@project_offer.route('/api/projects/submitted', methods=['GET'])
+@limiter.limit("100 per second")
+# @token_required([2])
+def get_projects_submitted():
+    current_app.logger.info("GET /api/projects called")
+    try:
+        project_list = []
+        projects = Project.query.filter_by(submitted=True).all()
+
+        if not projects:
+            current_app.logger.warning("No projects found in database")
+            return handle_specific_not_found('No project found.')
+
+        for project in projects:
+            project_data = project.project_detail()
+            fin_kod = project_data.get('fin_kod')
+            user = User.query.filter_by(fin_kod=fin_kod).first()
+
+            if user:
+                project_data['user'] = {
+                    'name': user.name,
+                    'surname': user.surname
+                }
+            else:
+                project_data['user'] = None
+
+            project_list.append(project_data)
+
+        current_app.logger.info(f"Returning {len(project_list)} projects")
+        return handle_success(project_list, 'Projects fetched successfully.')
+    except Exception as e:
+        current_app.logger.error(f"Exception in /api/projects: {e}", exc_info=True)
+        return handle_global_exception(str(e))
     
 @project_offer.route("/api/project/<string:fin_kod>")
 @limiter.limit("100 per second")
@@ -347,7 +383,7 @@ def submit_project():
 
     if not project:
         return {'error': 'Project not found for the provided project_code.'}, 404
-    smeta = Smeta.query.filter_by(project_code=project_code).first()
+    smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
 
     total_amount = sum([
         smeta.total_fee,
@@ -458,8 +494,17 @@ def download_pdf(project_code):
         }, 404
     
     # smeta logic to get total and each smeta values
-    
     main_smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
+    if not main_smeta:
+        main_smeta = type("EmptySmeta", (), {
+            "total_salary": 0,
+            "total_equipment": 0,
+            "total_fee": 0,
+            "defense_fund": 0,
+            "total_services": 0,
+            "total_rent": 0,
+            "other_expenses": 0
+        })()
 
     total_main_amount = sum([
         main_smeta.total_salary or 0,
@@ -534,34 +579,49 @@ def download_pdf(project_code):
 
     elements = []
 
-    response = requests.get("https://imgs.search.brave.com/01EIyM_Lh6guT11HMah-gFja9fDwhkYJKWWue9Wh_Zw/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly93d3cu/b3BlbmFpcmUuZXUv/dGVtcGxhdGVzL3lv/b3RoZW1lL2NhY2hl/LzBmL2F6dHUtbG9n/by0tMGYyZjMwY2Mu/cG5n")
+    response = requests.get("https://imgs.search.brave.com/vbEBGTiOqsEBji5vMQfxvvJJtCHIrwqwPFMgdQ6D22M/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly9pbWFn/ZXMuc2Vla2xvZ28u/Y29tL2xvZ28tcG5n/LzMxLzEvYXplcmJh/aWphbi1nZXJiLWxv/Z28tcG5nX3NlZWts/b2dvLTMxODE0MC5w/bmc")
     image_file = BytesIO(response.content)
-    img = RLImage(image_file, width=2*inch, height=1*inch)
+    img = RLImage(image_file, width=2*inch, height=2*inch)
     elements.append(img)
     elements.append(Spacer(1, 12))
 
-    text_under_image = "AZƏRBAYCAN TEXNİKİ UNİVERSİTETİ"
+    text_under_image = "AZƏRBAYCAN TEXNİKİ UNİVERSİTETİ (AzTU) daxili qrant müsabiqəsi"
     elements.append(Paragraph(text_under_image, heading1))
     elements.append(Spacer(1, 12))
 
-    heading_2 = "DAXİLİ QRANT MÜSABİQƏSİ"
+    heading_2 = "Azərbaycan Texniki Universiteti (AzTU) elmi-tədqiqat işlərinin və innovasiyaların dəstəklənməsi və inkşafı məqsədilə daxili qrant müsabiqəsi"
     elements.append(Paragraph(heading_2, heading2))
     elements.append(Spacer(1, 12))
 
-    heading_3 = "LAYİHƏ MÜSABİQƏSİ"
-    elements.append(Paragraph(heading_3, heading2))
+    heading_56789 = "(AzTU-DQL-2025) qalibi olmuş" 
+    elements.append(Paragraph(heading_56789, heading2))
+    elements.append(Spacer(1, 12))
+
+    heading_09876 = "Layihənin yerinə yetirilməsi haqqında" 
+    elements.append(Paragraph( heading_09876, heading2))
+    elements.append(Spacer(1, 12))
+    
+    heading_56745788 = "Azərbaycan Texniki Universiteti (AzTU) ilə Layihə rəhbəri arasında bağlanılmış" 
+    elements.append(Paragraph(heading_56745788, heading2))
+    elements.append(Spacer(1, 12))
+
+    heading_90 = f"Müqavilə № AzTU-DQL-2025-M01/{project_code}"
+    elements.append(Paragraph(heading_90, heading2))
+    elements.append(Spacer(1, 12))
+
+    heading_915678 = "Əlavə-1"
+    elements.append(Paragraph(heading_915678, heading2))
     elements.append(Spacer(1, 12))
 
     elements.append(HRFlowable(width="100%", thickness=1, lineCap='round', color=colors.black, spaceBefore=6, spaceAfter=6))
     elements.append(Spacer(1, 12))
 
-    heading_1 = "LAYİHƏ TƏKLİFİ FORMASI"
-    elements.append(Paragraph(heading_1, heading1))
+    heading_912345 = "Bakı şəhəri"
+    elements.append(Paragraph(heading_912345, heading2))
     elements.append(Spacer(1, 12))
 
-    elements.append(Paragraph(f"(layihənin  məzmunu və əsaslandırılması)", title_style))
-    elements.append(Spacer(1, 12))
-    elements.append(Paragraph(f"(həcmi –  səhifədən artıq olmamaqla; 12 ölçülü TNR şrifti ilə, 1 intervalla yazılmalıdır)", title_style))
+    heading_23456 = "01 dekabr 2025-ci il"
+    elements.append(Paragraph(heading_23456, heading2))
     elements.append(Spacer(1, 12))
 
     project_fields = [
@@ -578,43 +638,46 @@ def download_pdf(project_code):
     ]
 
     for field_name, value in project_fields:
-        data = [
-            [Paragraph(field_name, table_heading_style)],
-            [Paragraph(value or "—", table_content_style)]
-        ]
-        table = Table(data, colWidths=[6.5 * inch])
-        table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d3d3d3")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-            ("FONTNAME", (0, 0), (-1, 0), font_name),
-            ("FONTNAME", (0, 1), (-1, -1), font_name),
-            ("ALIGN", (0, 0), (-1, 0), "LEFT"),
-            ("ALIGN", (0, 1), (-1, -1), "LEFT"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("LEFTPADDING", (0, 0), (-1, -1), 6),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ]))
-        elements.append(table)
-        elements.append(Spacer(1, 12))
-    
-    signature_table_data = [
-        [
-            Paragraph("İmza: ____________________", table_content_style),
-            Paragraph("Ad, Soyad, Ata adı: ____________________", table_content_style),
-        ]
-    ]
-    signature_table = Table(signature_table_data, colWidths=[3.25 * inch, 3.25 * inch])
-    signature_table.setStyle(TableStyle([
-        ("FONTNAME", (0, 0), (-1, -1), font_name),
-        ("FONTSIZE", (0, 0), (-1, -1), 11),
-        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-    ]))
-    elements.append(signature_table)
-    elements.append(Spacer(1, 12))
+        text_content = value or "—"
+        # If the text is very long, handle it as paragraphs instead of a table
+        if len(text_content) > 1000:
+            current_app.logger.warning(f"Long content detected in '{field_name}', using paragraph layout.")
+            elements.append(Paragraph(f"<b>{field_name}</b>", table_heading_style))
+            elements.append(Spacer(1, 6))
+            elements.append(Paragraph(text_content, table_content_style))
+            elements.append(Spacer(1, 12))
+            continue
+
+        try:
+            data = [
+                [Paragraph(field_name, table_heading_style)],
+                [Paragraph(text_content, table_content_style)]
+            ]
+            table = Table(data, colWidths=[6.5 * inch])
+            table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#d3d3d3")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                ("FONTNAME", (0, 0), (-1, 0), font_name),
+                ("FONTNAME", (0, 1), (-1, -1), font_name),
+                ("ALIGN", (0, 0), (-1, 0), "LEFT"),
+                ("ALIGN", (0, 1), (-1, -1), "LEFT"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ]))
+            table._argW[0] = 6.5 * inch
+            table.splitByRow = True
+            elements.append(table)
+            elements.append(Spacer(1, 12))
+        except Exception as e:
+            current_app.logger.error(f"Error adding project field table for '{field_name}': {e}")
+            elements.append(Paragraph(f"<b>{field_name}</b>", table_heading_style))
+            elements.append(Spacer(1, 6))
+            elements.append(Paragraph(text_content, table_content_style))
+            elements.append(Spacer(1, 12))
+
+    # Signature section will be added at the end, after all tables
 
     # activities table
     # Activities Table Section (refactored for UnboundLocalError and month highlight)
@@ -712,42 +775,15 @@ def download_pdf(project_code):
     elements.append(activity_table)
     elements.append(Spacer(1, 18))
 
-    img = RLImage(image_file, width=2*inch, height=1*inch)
-    elements.append(img)
-    elements.append(Spacer(1, 12))
+    # Removed the second occurrence of the image in the activities section as requested
 
-    # table for smeta details
-
-    text_under_image = "AZƏRBAYCAN TEXNİKİ UNİVERSİTETİ"
-    elements.append(Paragraph(text_under_image, heading1))
-    elements.append(Spacer(1, 12))
-
-    heading_2 = "DAXİLİ QRANT MÜSABİQƏSİ"
-    elements.append(Paragraph(heading_2, heading2))
-    elements.append(Spacer(1, 12))
-
-    heading_3 = "LAYİHƏ MÜSABİQƏSİ"
-    elements.append(Paragraph(heading_3, heading2))
-    elements.append(Spacer(1, 12))
-
-    elements.append(HRFlowable(width="100%", thickness=1, lineCap='round', color=colors.black, spaceBefore=6, spaceAfter=6))
-    elements.append(Spacer(1, 12))
-
-    heading_1 = "LAYİHƏNİN SMETA DƏYƏRİNİN HESABLANMASI"
+    heading_1 = "LAYİHƏNİN ÜMUMİ SMETASI"
     elements.append(Paragraph(heading_1, heading1))
-    elements.append(Spacer(1, 12))
-
-    elements.append(Paragraph(f"Bu Forma 12 ölçülü TNR şrifti ilə, 1 intervalla doldurulmalıdır", title_style))
-    elements.append(Spacer(1, 12))
-
-    elements.append(Paragraph(f"<b>Diqqət! Bütün xərc maddələri qanunvericilikdə nəzərdə tutulmuş vergilər, rüsumlar, lisenziya haqları, sığorta məbləği və digər ödənişlər əlavə olunmaqla və açıq şəkildə göstərilməklə yazılmalıdır</b>", title_style))
     elements.append(Spacer(1, 12))
 
     heading_4 = "Layihənin xərclər smetası (manatla)"
     elements.append(Paragraph(heading_4, heading2))
     elements.append(Spacer(1, 12))
-
-    # Add table with 3 headers and 8 rows of sample data
 
     smeta_table_data = [
         [
@@ -807,20 +843,81 @@ def download_pdf(project_code):
     ]))
     elements.append(smeta_table)
 
-    elements.append(Paragraph(f"* Lazım gəldikdə sətirlər əlavə oluna bilər.", title_style))
-    elements.append(Spacer(1, 12))
+    # --- Collaborators Salary Table (after main smeta, before signature) ---
+    elements.append(Spacer(1, 18))
+    elements.append(Paragraph("Layihə Rəhbəri və İcraçıların Siyahısı və Əmək Haqqı", heading2))
+    elements.append(Spacer(1, 6))
 
-    elements.append(Paragraph(f"** Xidmət haqqına aşağıdakı ayırmalar daxildir:", title_style))
-    elements.append(Spacer(1, 12))
-    elements.append(Paragraph(f"** Xidmət haqqına aşağıdakı ayırmalar daxildir:", title_style))
-    elements.append(Spacer(1, 12))
-    elements.append(Paragraph(f"- Məcburi dövlət sosial sığorta haqqı – 100 manat", title_style))
-    elements.append(Spacer(1, 12))
-    elements.append(Paragraph(f"- İcbari tibbi sığorta fonduna aylıq ödəniş – 16 manat (“Sosial sığorta haqqında” AR Milli Məclisin 18 fevral 1997-ci il tarixli qanunu).", title_style))
-    elements.append(Spacer(1, 12))
-    elements.append(Paragraph(f"- Gəlir vergisi – 5%;", title_style))
-    elements.append(Spacer(1, 12))
-    elements.append(Paragraph(f"- Nağdlaşdırma komissiyası – 1.5%.", title_style))
+    # Fetch collaborators for this project
+    collaborators = Collaborator.query.filter_by(project_code=project_code).all()
+    salary_smeta = Salary.query.filter_by(project_code=project_code).all()
+    # Build a map: fin_kod -> total_salary
+    salary_map = {}
+    for s in salary_smeta:
+        salary_map[s.fin_kod] = s.total_salary
+
+    # Add project owner to the list as well
+    project_owner_user = User.query.filter_by(fin_kod=project.fin_kod).first()
+
+    project_owner_salary = salary_map.get(project.fin_kod, "—")
+
+    owner_row = None
+    if project_owner_user:
+        owner_row = [
+            Paragraph(str(project_owner_user.name), table_content_style),
+            Paragraph(str(project_owner_user.surname), table_content_style),
+            Paragraph(f"{project_owner_user.father_name} ({project_owner_user.fin_kod})", table_content_style),
+            Paragraph(str(project_owner_salary), table_content_style)
+        ]
+
+    # Prepare table data
+    collaborators_table_data = [
+        [
+            Paragraph("Ad", table_heading_style),
+            Paragraph("Soyad", table_heading_style),
+            Paragraph("Ata adı (FIN KOD)", table_heading_style),
+            Paragraph("Ümumi əmək haqqı", table_heading_style)
+        ]
+    ]
+    if owner_row:
+        collaborators_table_data.append(owner_row)
+
+    if collaborators:
+        for collab in collaborators:
+            user = User.query.filter_by(fin_kod=collab.fin_kod).first()
+            name = user.name if user and hasattr(user, "name") else "—"
+            surname = user.surname if user and hasattr(user, "surname") else "—"
+            father_name = user.father_name if user and hasattr(user, "father_name") else "—"
+            fin_kod = user.fin_kod if user and hasattr(user, "fin_kod") else "—"
+            salary_total = salary_map.get(fin_kod, "—")
+            collaborators_table_data.append([
+                Paragraph(str(name), table_content_style),
+                Paragraph(str(surname), table_content_style),
+                Paragraph(f"{father_name} ({fin_kod})", table_content_style),
+                Paragraph(str(salary_total), table_content_style)
+            ])
+    else:
+        if not owner_row:
+            collaborators_table_data.append([
+                Paragraph("Məlumat yoxdur", table_content_style),
+                "", "", ""
+            ])
+
+    collaborators_table = Table(collaborators_table_data, colWidths=[doc.width * 0.22, doc.width * 0.22, doc.width * 0.30, doc.width * 0.26])
+    collaborators_table_style = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e0e0e0")),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTNAME", (0, 0), (-1, -1), font_name),
+        ("FONTSIZE", (0, 0), (-1, -1), 11),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+    ]
+    if not collaborators:
+        collaborators_table_style.append(("SPAN", (0, 1), (-1, 1)))
+    collaborators_table.setStyle(TableStyle(collaborators_table_style))
+    elements.append(collaborators_table)
     elements.append(Spacer(1, 12))
 
     heading_5 = "Əlavə 2. Avadanlıq, cihaz, qurğu və mal-materialların satınalınması"
@@ -1065,23 +1162,60 @@ def download_pdf(project_code):
     elements.append(other_exp_table)
     elements.append(Spacer(1, 12))
 
-    signature_table_data = [
-        [
-            Paragraph("İmza: ____________________", table_content_style),
-            Paragraph("Ad, Soyad, Ata adı: ____________________", table_content_style),
-        ]
+    # SIGNATURE SECTION - at the end of the PDF
+    elements.append(Spacer(1, 36))
+    # Fetch project owner
+    owner = None
+    if hasattr(project, "fin_kod"):
+        owner = User.query.filter_by(fin_kod=project.fin_kod).first()
+    owner_full_name = ""
+    if owner:
+        owner_full_name = f"{owner.name or ''} {owner.surname or ''} {owner.father_name or ''}".strip()
+    else:
+        owner_full_name = "—"
+
+    # Two-column signature table
+    left_title = "Azərbaycan Texniki Universiteti adından rektor"
+    left_name = "Professor Vəliyev Vilayət Məmməd oğlu"
+    right_title = "Layihə rəhbəri"
+    right_name = owner_full_name
+
+    # First row: titles
+    sig_titles = [
+        Paragraph(f"{left_title}", table_content_style),
+        Paragraph(f"{right_title}", table_content_style)
     ]
-    signature_table = Table(signature_table_data, colWidths=[3.25 * inch, 3.25 * inch])
-    signature_table.setStyle(TableStyle([
+    # Second row: names
+    sig_names = [
+        Paragraph(f"{left_name}", table_content_style),
+        Paragraph(f"{right_name}", table_content_style)
+    ]
+    # Third row: signature lines
+    sig_lines = [
+        Paragraph("_____________________", table_content_style),
+        Paragraph("_____________________", table_content_style)
+    ]
+    # Fourth row: (imza)
+    sig_imza = [
+        Paragraph("(imza)", table_content_style),
+        Paragraph("(imza)", table_content_style)
+    ]
+    signature_table_final = Table(
+        [sig_titles, sig_names, sig_lines, sig_imza],
+        colWidths=[3.25 * inch, 3.25 * inch]
+    )
+    signature_table_final.setStyle(TableStyle([
         ("FONTNAME", (0, 0), (-1, -1), font_name),
         ("FONTSIZE", (0, 0), (-1, -1), 11),
         ("ALIGN", (0, 0), (-1, -1), "LEFT"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("TOPPADDING", (0, 0), (-1, -1), 6),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        # Optionally, vertical spacing
     ]))
-    elements.append(signature_table)
-    elements.append(Spacer(1, 12))
+    elements.append(signature_table_final)
 
     doc.build(elements)
     pdf_data = buffer.getvalue()
@@ -1091,7 +1225,6 @@ def download_pdf(project_code):
     response.headers["Content-Type"] = "application/pdf"
     response.headers["Content-Disposition"] = f"attachment; filename=project_{project_code}.pdf"
     return response
-
 
 from io import BytesIO
 from flask import send_file
