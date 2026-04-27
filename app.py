@@ -18,6 +18,7 @@ from controllers.smetaControllers.rentController import rent_bp
 from controllers.smetaControllers.smetaCotroller import smeta_bp
 from controllers.smetaControllers.salaryController import salary_bp
 from controllers.ProjectActivitiesController import project_activity
+from controllers.ReportController import report_bp
 from controllers.smetaControllers.subjectController import subject_bp
 from controllers.smetaControllers.other_expensesController import other_exp
 from controllers.smetaControllers.servicesTableController import services_bp
@@ -72,6 +73,7 @@ def main_app():
     app.register_blueprint(institution_bp)
     app.register_blueprint(collaborator_bp)
     app.register_blueprint(project_activity)
+    app.register_blueprint(report_bp)
 
     return app
 
