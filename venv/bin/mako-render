@@ -1,4 +1,4 @@
-#!/Users/karamshukurlu/Desktop/AZTU/AZTU-E-QRANT-BACK/venv/bin/python3.14
+#!/Users/firdovsirz/Documents/e-grant/AZTU-E-QRANT-BACK/venv/bin/python3.13
 import sys
 from mako.cmd import cmdline
 if __name__ == '__main__':

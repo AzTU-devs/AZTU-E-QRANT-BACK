@@ -1,7 +1,10 @@
+import logging
 from flask import Blueprint, request, jsonify
 from extentions.db import db
 from models.reportModel import QuarterlyReport
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 report_bp = Blueprint('report_bp', __name__)
 
@@ -18,7 +21,7 @@ def save_report():
             if field not in data:
                 return jsonify({"error": f"{field} is required"}), 400
 
-        project_code   = data['project_code']
+        project_code   = int(data['project_code'])
         quarter_number = int(data['quarter_number'])
         year           = int(data['year'])
 
@@ -56,10 +59,11 @@ def save_report():
 
     except Exception as e:
         db.session.rollback()
+        logger.error(f"Error saving report: {str(e)}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
-@report_bp.route('/api/reports/<project_code>/<int:quarter_number>/<int:year>', methods=['GET'])
+@report_bp.route('/api/reports/<int:project_code>/<int:quarter_number>/<int:year>', methods=['GET'])
 def get_report(project_code, quarter_number, year):
     try:
         report = QuarterlyReport.query.filter_by(
@@ -78,4 +82,5 @@ def get_report(project_code, quarter_number, year):
         }), 200
 
     except Exception as e:
+        logger.error(f"Error getting report: {str(e)}", exc_info=True)
         return jsonify({"error": str(e)}), 500

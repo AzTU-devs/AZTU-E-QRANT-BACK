@@ -6,7 +6,7 @@ class QuarterlyReport(db.Model):
     __tablename__ = 'quarterly_reports'
 
     id             = db.Column(db.Integer, primary_key=True, autoincrement=True)
-    project_code   = db.Column(db.String(50), nullable=False)
+    project_code   = db.Column(db.BigInteger, nullable=False)
     quarter_number = db.Column(db.Integer, nullable=False)
     year           = db.Column(db.Integer, nullable=False)
 
