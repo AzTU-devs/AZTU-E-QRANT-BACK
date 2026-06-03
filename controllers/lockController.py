@@ -24,7 +24,8 @@ def lock_status():
     try:
         lock_status = SystemLock.query.first()
 
-        return jsonify({"locked": lock_status.is_locked})
+        # No lock row yet → system is unlocked by default
+        return jsonify({"locked": lock_status.is_locked if lock_status else False})
     except SQLAlchemyError:
         db.session.rollback()
         return jsonify({"error": "Database error"}), 500

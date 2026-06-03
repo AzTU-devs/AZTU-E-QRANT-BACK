@@ -33,7 +33,7 @@ end
 # Unset irrelevant variables.
 deactivate nondestructive
 
-set -gx VIRTUAL_ENV /Users/firdovsirz/Documents/e-grant/AZTU-E-QRANT-BACK/venv
+set -gx VIRTUAL_ENV /Users/karamshukurlu/Desktop/AZTU/GRANT/AZTU-E-QRANT-BACK/venv
 
 set -gx _OLD_VIRTUAL_PATH $PATH
 set -gx PATH "$VIRTUAL_ENV/"bin $PATH
