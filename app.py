@@ -12,6 +12,7 @@ from controllers.lockController import lock_bp
 from controllers.ExpertController import expert_bp
 from controllers.PriotetController import priotet_bp
 from controllers.ProjectController import project_offer
+from controllers.PublicController import public_bp
 from controllers.InstitutionController import institution_bp
 from controllers.CollaboratorController import collaborator_bp
 from controllers.smetaControllers.rentController import rent_bp
@@ -70,6 +71,7 @@ def main_app():
     app.register_blueprint(priotet_bp)
     app.register_blueprint(services_bp)
     app.register_blueprint(project_offer)
+    app.register_blueprint(public_bp)
     app.register_blueprint(institution_bp)
     app.register_blueprint(collaborator_bp)
     app.register_blueprint(project_activity)
