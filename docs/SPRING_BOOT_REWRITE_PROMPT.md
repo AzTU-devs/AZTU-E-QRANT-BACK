@@ -19,10 +19,11 @@ or lock the submission window.
 There is an existing **Python/Flask + SQLAlchemy** implementation in this repository.
 **It is the behavioural source of truth** — when a requirement is ambiguous, read the
 corresponding Flask `controllers/*.py`, `models/*.py`, and `utils/*.py` and replicate
-the observable behaviour. The new database schema is already designed in
-**`docs/DB_ARCHITECTURE.md`** (read it fully first) and a working data-migration that
-loads the legacy data into that schema lives in **`migration_v2/`** — your Flyway
-schema **must** match `migration_v2/new_models.py` so that migration keeps working.
+the observable behaviour. The new database schema is fully specified in
+**`docs/DB_ARCHITECTURE.md`** — read it fully first; it is the **single schema source
+of truth**. Build your Flyway migrations and JPA entities directly from that document.
+(An optional data-migration that loads the legacy data into this schema lives in
+`migration_v2/`; as long as your schema matches the doc, that loader keeps targeting it.)
 
 Build the new project in a **new top-level directory `egrant-springboot/`**. Do not
 modify the Flask code.
@@ -37,9 +38,10 @@ modify the Flask code.
    Use plural nouns, proper HTTP verbs, paginated list endpoints, and DTOs shaped by
    the new schema (not the legacy `*_details()` serializers). Frontends will be updated
    to this API; record the legacy→new mapping in `egrant-springboot/API_MAP.md`.
-2. **Schema = `docs/DB_ARCHITECTURE.md` / `migration_v2/new_models.py`.** Surrogate
+2. **Schema = `docs/DB_ARCHITECTURE.md` — the single source of truth.** Surrogate
    `BIGINT` PKs, real FKs, enum statuses, unified `budget_line_items`, DB-computed
-   line totals, the `v_budget_totals` view. Author it as Flyway migrations.
+   line totals, the `v_budget_totals` view. Author it as Flyway migrations straight
+   from that document.
 3. **Fix the known legacy defects** (don't reproduce them) — see "Defects to fix".
 4. **Modular monolith with enforced boundaries** (Spring Modulith) — see "Architecture".
 5. The build must be green: `./mvnw verify` compiles, passes unit + integration tests
@@ -101,11 +103,11 @@ impls, mappers), `events`.
 
 ## Domain model & migrations
 
-- Read `docs/DB_ARCHITECTURE.md` and mirror `migration_v2/new_models.py` exactly:
-  tables, columns, enums (`academic_type, account_status, global_role, project_status,
-  member_role, member_status, assignment_status, budget_category`), unique
-  constraints, indexes, `ON DELETE` rules, the two `GENERATED ... STORED` total
-  columns, and the `v_budget_totals` view.
+- Implement the schema in `docs/DB_ARCHITECTURE.md` exactly: all 16 tables, columns,
+  enums (`academic_type, account_status, global_role, project_status, member_role,
+  member_status, assignment_status, budget_category`), unique constraints, indexes,
+  `ON DELETE` rules, the two `GENERATED ... STORED` total columns, and the
+  `v_budget_totals` view (the doc gives its DDL).
 - Author **Flyway** `V1__init_schema.sql` (DDL incl. enum types, generated columns,
   view). Map JPA entities onto it; mark generated `total_amount` columns
   `insertable=false, updatable=false` and read them back after insert.
@@ -333,7 +335,7 @@ the clean design above and note the mapping in `API_MAP.md`. Grouped by module:
 
 ## Working method
 
-1. Read `docs/DB_ARCHITECTURE.md`, `migration_v2/new_models.py`, then skim every
+1. Read `docs/DB_ARCHITECTURE.md` (the schema spec), then skim every
    `controllers/*.py`, `models/*.py`, `utils/*.py` to extract the **features, guards,
    and business rules**. Produce `egrant-springboot/REQUIREMENTS.md` (capabilities +
    rules) and `egrant-springboot/API_MAP.md` (legacy endpoint → new `/api/v1` resource).
@@ -360,8 +362,8 @@ with the most reasonable assumption rather than blocking.
 - `./mvnw verify` is green (unit + Testcontainers integration + Modulith verify).
 - Every legacy capability is reachable via the new `/api/v1` API; the legacy→new
   mapping is recorded in `API_MAP.md`.
-- Flyway schema matches `docs/DB_ARCHITECTURE.md`; `migration_v2/etl.py` can load into
-  it unchanged.
+- Flyway schema matches `docs/DB_ARCHITECTURE.md` exactly (all tables, enums,
+  generated columns, and the `v_budget_totals` view).
 - Swagger UI lists all endpoints; app boots via `docker-compose up` against Postgres.
 - All "Business rules" enforced and "Defects to fix" addressed; no secrets committed.
 ```
