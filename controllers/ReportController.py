@@ -1,19 +1,13 @@
 import os
 import uuid
 import logging
-<<<<<<< HEAD
-from flask import Blueprint, request, jsonify, send_file, current_app
+from io import BytesIO
+from xml.sax.saxutils import escape
+from flask import Blueprint, request, jsonify, send_file, current_app, make_response
 from werkzeug.utils import secure_filename
 from extentions.db import db
 from models.reportModel import QuarterlyReport, ReportFile
-=======
-from io import BytesIO
-from xml.sax.saxutils import escape
-from flask import Blueprint, request, jsonify, make_response, send_file
-from extentions.db import db
-from models.reportModel import QuarterlyReport
 from models.projectModel import Project
->>>>>>> 194ab3b (feat: reports)
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -22,40 +16,9 @@ report_bp = Blueprint('report_bp', __name__)
 
 POINT_FIELDS = [f"point_{i}" for i in range(1, 18)]
 
-<<<<<<< HEAD
 # Fayl yükləmə yalnız 4-cü rüb üçün icazəlidir
 FOURTH_QUARTER = 4
 
-
-def _allowed_file(filename):
-    if '.' not in filename:
-        return False
-    ext = filename.rsplit('.', 1)[1].lower()
-    return ext in current_app.config['ALLOWED_REPORT_EXTENSIONS']
-
-
-def _report_files_folder():
-    folder = current_app.config['REPORT_FILES_FOLDER']
-    os.makedirs(folder, exist_ok=True)
-    return folder
-
-
-def _get_or_create_report(project_code, quarter_number, year):
-    report = QuarterlyReport.query.filter_by(
-        project_code=project_code,
-        quarter_number=quarter_number,
-        year=year
-    ).first()
-    if not report:
-        report = QuarterlyReport(
-            project_code=project_code,
-            quarter_number=quarter_number,
-            year=year,
-        )
-        db.session.add(report)
-        db.session.flush()
-    return report
-=======
 POINT_LABELS = {
     "point_1":  "1. Cari rübdə görülmüş elmi işlər",
     "point_2":  "2. Planlaşdırılmış işlərin yerinə yetirilmə dərəcəsi (%)",
@@ -89,7 +52,36 @@ def _fetch_reports(project_code, quarter=None, year=None):
         QuarterlyReport.year.asc(),
         QuarterlyReport.quarter_number.asc()
     ).all()
->>>>>>> 194ab3b (feat: reports)
+
+
+def _allowed_file(filename):
+    if '.' not in filename:
+        return False
+    ext = filename.rsplit('.', 1)[1].lower()
+    return ext in current_app.config['ALLOWED_REPORT_EXTENSIONS']
+
+
+def _report_files_folder():
+    folder = current_app.config['REPORT_FILES_FOLDER']
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def _get_or_create_report(project_code, quarter_number, year):
+    report = QuarterlyReport.query.filter_by(
+        project_code=project_code,
+        quarter_number=quarter_number,
+        year=year
+    ).first()
+    if not report:
+        report = QuarterlyReport(
+            project_code=project_code,
+            quarter_number=quarter_number,
+            year=year,
+        )
+        db.session.add(report)
+        db.session.flush()
+    return report
 
 
 @report_bp.route('/api/reports/save', methods=['POST'])
@@ -167,7 +159,6 @@ def get_report(project_code, quarter_number, year):
         return jsonify({"error": str(e)}), 500
 
 
-<<<<<<< HEAD
 @report_bp.route('/api/reports/files/upload', methods=['POST'])
 def upload_report_files():
     """4-cü rüb hesabatına bir və ya bir neçə fayl (pdf, doc, docx) əlavə edir."""
@@ -315,7 +306,8 @@ def delete_report_file(file_id):
         db.session.rollback()
         logger.error(f"Error deleting report file: {str(e)}", exc_info=True)
         return jsonify({"error": str(e)}), 500
-=======
+
+
 @report_bp.route('/api/reports/project/<int:project_code>', methods=['GET'])
 def list_reports(project_code):
     """List every quarterly report saved for a project (used by the admin view)."""
@@ -454,4 +446,3 @@ def reports_docx(project_code):
         download_name=f"project_{project_code}_reports.docx",
         mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
->>>>>>> 194ab3b (feat: reports)
