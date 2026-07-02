@@ -201,10 +201,19 @@ def be_collaborator():
         if not profile_approved:
             logger.debug("User profile not completed.")
             return {'error': 'User profile is not completed.', 'status': 403}, 403
-        
+
+        # A person may join only one project PER competition. The global UNIQUE on
+        # fin_kod was relaxed to (fin_kod, competition_id), so check explicitly.
+        existing = Collaborator.query.filter_by(
+            fin_kod=fin_kod, competition_id=project.competition_id
+        ).first()
+        if existing:
+            return handle_conflict("Already a collaborator in this competition.")
+
         new_collaborator_record = Collaborator(
             project_code=project_code,
-            fin_kod=fin_kod
+            fin_kod=fin_kod,
+            competition_id=project.competition_id
         )
 
         logger.debug("Adding new collaborator to the database")

@@ -2,10 +2,15 @@ from extentions.db import db
 
 class Project(db.Model):
     __tablename__ = 'project'
+    # A user may own one project PER competition (not one globally), so the
+    # uniqueness is composite rather than a global UNIQUE on fin_kod.
+    __table_args__ = (
+        db.UniqueConstraint('fin_kod', 'competition_id', name='uq_project_fin_competition'),
+    )
 
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     project_code = db.Column(db.Integer, unique=True, nullable=False)
-    fin_kod = db.Column(db.String, unique=True, nullable=False)
+    fin_kod = db.Column(db.String, nullable=False)
     project_name = db.Column(db.Text)
     project_purpose = db.Column(db.Text)
     project_annotation = db.Column(db.Text)
@@ -26,6 +31,7 @@ class Project(db.Model):
     submitted_at = db.Column(db.DateTime)
     winner = db.Column(db.Boolean, default=False)
     winner_at = db.Column(db.DateTime)
+    competition_id = db.Column(db.Integer)  # FK-by-convention -> competitions.id
 
     def project_detail(self):
         return {
@@ -51,5 +57,6 @@ class Project(db.Model):
             'submitted': self.submitted,
             'submitted_at': self.submitted_at,
             'winner': bool(self.winner),
-            'winner_at': self.winner_at
+            'winner_at': self.winner_at,
+            'competition_id': self.competition_id
         }

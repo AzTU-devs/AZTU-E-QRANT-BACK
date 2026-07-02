@@ -7,6 +7,7 @@ from models.userModel import User
 from config.limiter import limiter
 from models.projectModel import Project
 from models.prioritetModel import Priotet
+from models.competitionModel import Competition
 from models.smetaModels.rentModel import Rent
 from utils.jwt_required import token_required
 from models.smetaModels.smetaModel import Smeta
@@ -41,16 +42,26 @@ def save_project():
         current_app.logger.warning("Missing fin_kod in request")
         return handle_missing_field(404)
 
-    project = Project.query.filter_by(fin_kod=fin_kod).first()
+    # Scope to the ACTIVE competition so a returning user creates a NEW project
+    # each season instead of overwriting last year's row.
+    active = Competition.get_active()
+    active_id = active.id if active else None
+
+    project = Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
     if not project:
-        current_app.logger.info(f"No existing project found for fin_kod={fin_kod}, creating new one.")
+        current_app.logger.info(f"No project for fin_kod={fin_kod} in active competition, creating new one.")
         project = Project(
             fin_kod=fin_kod,
-            project_code=generate_unique_project_code()
+            project_code=generate_unique_project_code(),
+            competition_id=active_id
         )
+        # Snapshot the competition's limits onto the project.
+        if active:
+            project.collaborator_limit = active.collaborator_limit
+            project.max_smeta_amount = active.max_smeta_amount
         db.session.add(project)
     else:
-        current_app.logger.info(f"Updating existing project with fin_kod={fin_kod}")
+        current_app.logger.info(f"Updating existing project with fin_kod={fin_kod} in active competition")
 
     for field in [
         'project_name', 'project_purpose', 'project_annotation',
@@ -254,7 +265,8 @@ def get_project_by_fin_kod(fin_kod):
         if not user:
             return handle_specific_not_found('User not found.')
         
-        project = Project.query.filter_by(fin_kod=fin_kod).first()
+        active_id = Competition.get_active_id()
+        project = Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
 
         return handle_success(project.project_detail(), 'Project fetched successfully')
     except Exception as e:
@@ -291,7 +303,8 @@ def update_project_offer():
     if not fin_kod:
         return {'error': 'fin_kod field is required to update a project.'}, 400
 
-    project = Project.query.filter_by(fin_kod=fin_kod).first()
+    active_id = Competition.get_active_id()
+    project = Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
     if not project:
         return {'error': 'Project not found for the provided fin_kod.'}, 404
 
@@ -329,7 +342,8 @@ def delete_project_offer():
     if not fin_kod:
         return {'error': 'fin_kod parameter is required.'}, 400
 
-    project = Project.query.filter_by(fin_kod=fin_kod).first()
+    active_id = Competition.get_active_id()
+    project = Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
 
     if not project:
         return {'error': 'Project not found for the provided fin_kod.'}, 404
@@ -627,7 +641,18 @@ def download_pdf(project_code):
     elements.append(Paragraph(heading_2, heading2))
     elements.append(Spacer(1, 12))
 
-    heading_56789 = "(AzTU-DQL-2025) qalibi olmuş" 
+    # Source the competition identity from the project's competition instead of
+    # hardcoded 2025 values, so each season's PDFs/contracts are correct.
+    competition = Competition.query.get(project.competition_id) if project.competition_id else None
+    comp_code = competition.code if competition else "AzTU-DQL-2025"
+    comp_year = competition.year if competition else 2025
+    comp_contract = (
+        competition.contract_date.strftime('%d.%m.%Y')
+        if (competition and competition.contract_date)
+        else f"01 dekabr {comp_year}-ci il"
+    )
+
+    heading_56789 = f"({comp_code}) qalibi olmuş"
     elements.append(Paragraph(heading_56789, heading2))
     elements.append(Spacer(1, 12))
 
@@ -639,7 +664,7 @@ def download_pdf(project_code):
     elements.append(Paragraph(heading_56745788, heading2))
     elements.append(Spacer(1, 12))
 
-    heading_90 = f"Müqavilə № AzTU-DQL-2025-M01/{project_code}"
+    heading_90 = f"Müqavilə № {comp_code}-M01/{project_code}"
     elements.append(Paragraph(heading_90, heading2))
     elements.append(Spacer(1, 12))
 
@@ -654,7 +679,7 @@ def download_pdf(project_code):
     elements.append(Paragraph(heading_912345, heading2))
     elements.append(Spacer(1, 12))
 
-    heading_23456 = "01 dekabr 2025-ci il"
+    heading_23456 = comp_contract
     elements.append(Paragraph(heading_23456, heading2))
     elements.append(Spacer(1, 12))
 

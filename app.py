@@ -11,6 +11,8 @@ from controllers.AuthController import auth_bp
 from controllers.AnnouncementController import announcement_bp
 from controllers.RoleChangeController import role_change_bp
 from controllers.NotificationController import notification_bp
+from controllers.CompetitionController import competition_bp
+from controllers.MessageController import message_bp
 from controllers.UserController import user_bp
 from controllers.lockController import lock_bp
 from controllers.ExpertController import expert_bp
@@ -42,6 +44,15 @@ def ensure_schema():
         statements.append("ALTER TABLE project ADD COLUMN winner BOOLEAN DEFAULT FALSE")
     if 'winner_at' not in existing_columns:
         statements.append("ALTER TABLE project ADD COLUMN winner_at TIMESTAMP")
+    if 'competition_id' not in existing_columns:
+        statements.append("ALTER TABLE project ADD COLUMN competition_id INTEGER")
+
+    # collaborators.competition_id (additive, safe). The UNIQUE-constraint swap is
+    # intentionally NOT done here — it is applied via the provided SQL migration.
+    if 'collaborators' in inspector.get_table_names():
+        collab_columns = {col['name'] for col in inspector.get_columns('collaborators')}
+        if 'competition_id' not in collab_columns:
+            statements.append("ALTER TABLE collaborators ADD COLUMN competition_id INTEGER")
 
     if statements:
         with db.engine.begin() as conn:
@@ -89,6 +100,8 @@ def main_app():
     app.register_blueprint(announcement_bp)
     app.register_blueprint(role_change_bp)
     app.register_blueprint(notification_bp)
+    app.register_blueprint(competition_bp)
+    app.register_blueprint(message_bp)
     app.register_blueprint(lock_bp)
     app.register_blueprint(user_bp)
     app.register_blueprint(rent_bp)

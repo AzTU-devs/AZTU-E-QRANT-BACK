@@ -7,6 +7,7 @@ from flask_cors import cross_origin
 from models.userModel import db, User
 from utils.email_util import send_email
 from models.projectModel import  Project
+from models.competitionModel import Competition
 from datetime import datetime, timedelta
 from utils.jwt_required import token_required
 from exceptions.exception import handle_creation
@@ -150,12 +151,16 @@ def signin():
         project_role = auth_data.project_role
         project_code = None
 
+        # Resolve the project for the ACTIVE competition so the user loads this
+        # season's project, not a previous year's.
+        active_id = Competition.get_active_id()
+
         if project_role == 0:
-            project_owner = Project.query.filter_by(fin_kod=fin_kod).first()
+            project_owner = Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
             project_code = project_owner.project_code if project_owner else None
 
         elif project_role == 1:
-            collaborator = Collaborator.query.filter_by(fin_kod=fin_kod).first()
+            collaborator = Collaborator.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
             if collaborator:
                 project_code = collaborator.project_code
                 is_collaborator = True
