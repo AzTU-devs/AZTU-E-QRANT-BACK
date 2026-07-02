@@ -12,6 +12,7 @@ from models.userModel import User
 from models.projectModel import Project
 from models.prioritetModel import Priotet
 from models.collaboratorModel import Collaborator
+from models.announcementModel import Announcement
 from flask import Blueprint, current_app
 from exceptions.exception import handle_success, handle_global_exception
 
@@ -81,6 +82,7 @@ def public_projects():
                 'description': description,
                 'year': _project_year(project),
                 'priotet_name': priotet_map.get(str(project.priotet)) if project.priotet else None,
+                'winner': bool(project.winner),
                 'lead': {
                     'name': lead.name if lead else None,
                     'surname': lead.surname if lead else None,
@@ -114,6 +116,7 @@ def public_project_detail(project_code):
             'description': description,
             'year': _project_year(project),
             'priotet_name': priotet_obj.prioritet_name if priotet_obj else None,
+            'winner': bool(project.winner),
             'lead': _lead_public(lead),
             'collaborators': _approved_collaborators(project.project_code),
         }
@@ -146,4 +149,54 @@ def public_leads_tree():
         return handle_success(tree, 'Leads tree fetched successfully.')
     except Exception as e:
         current_app.logger.error(f"Exception in /api/public/leads-tree: {e}", exc_info=True)
+        return handle_global_exception(str(e))
+
+
+@public_bp.route('/api/public/winners', methods=['GET'])
+@limiter.limit("100 per second")
+def public_winners():
+    """Winner projects selected by the admin, with lead + approved collaborators."""
+    current_app.logger.info("GET /api/public/winners called")
+    try:
+        projects = Project.query.filter_by(winner=True).all()
+
+        priotet_map = {str(p.prioritet_code): p.prioritet_name for p in Priotet.query.all()}
+
+        winners = []
+        for project in projects:
+            lead = User.query.filter_by(fin_kod=project.fin_kod).first()
+            description = project.project_annotation or project.project_purpose
+
+            winners.append({
+                'project_code': project.project_code,
+                'project_name': project.project_name,
+                'description': description,
+                'year': _project_year(project),
+                'priotet_name': priotet_map.get(str(project.priotet)) if project.priotet else None,
+                'lead': _lead_public(lead),
+                'collaborators': _approved_collaborators(project.project_code),
+            })
+
+        return handle_success(winners, 'Winners fetched successfully.')
+    except Exception as e:
+        current_app.logger.error(f"Exception in /api/public/winners: {e}", exc_info=True)
+        return handle_global_exception(str(e))
+
+
+@public_bp.route('/api/public/announcements', methods=['GET'])
+@limiter.limit("100 per second")
+def public_announcements():
+    """Published announcements for the public website."""
+    current_app.logger.info("GET /api/public/announcements called")
+    try:
+        announcements = (
+            Announcement.query
+            .filter_by(published=True)
+            .order_by(Announcement.created_at.desc())
+            .all()
+        )
+        data = [a.serialize() for a in announcements]
+        return handle_success(data, 'Announcements fetched successfully.')
+    except Exception as e:
+        current_app.logger.error(f"Exception in /api/public/announcements: {e}", exc_info=True)
         return handle_global_exception(str(e))

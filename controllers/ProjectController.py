@@ -135,10 +135,44 @@ def approve_project():
         db.session.commit()
 
         return {'message': 'Project approved successfully.'}, 200
-    
+
     except Exception as e:
         return handle_global_exception(str(e))
-        
+
+
+@project_offer.route("/api/project/winner", methods=['POST'])
+@limiter.limit("100 per second")
+@token_required([2])
+def set_project_winner():
+    """Admin-only: mark / unmark a project as a competition winner."""
+    try:
+        data = request.get_json() or {}
+
+        project_code = data.get('project_code')
+        if project_code is None:
+            return handle_missing_field('project_code')
+
+        # `winner` is optional; when omitted the flag is toggled.
+        winner_value = data.get('winner')
+
+        project = Project.query.filter_by(project_code=project_code).first()
+        if not project:
+            return handle_specific_not_found('Project not found.')
+
+        if winner_value is None:
+            new_state = not bool(project.winner)
+        else:
+            new_state = bool(winner_value)
+
+        project.winner = new_state
+        project.winner_at = datetime.utcnow() if new_state else None
+        db.session.commit()
+
+        return handle_success(project.project_detail(), 'Project winner status updated.')
+    except Exception as e:
+        db.session.rollback()
+        return handle_global_exception(str(e))
+
 
 @project_offer.route('/api/projects', methods=['GET'])
 @limiter.limit("100 per second")

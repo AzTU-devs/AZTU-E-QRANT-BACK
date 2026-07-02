@@ -2,11 +2,13 @@ import os
 from flask import Flask
 from flask_cors import CORS
 from flasgger import Swagger
+from sqlalchemy import inspect, text
 from dotenv import load_dotenv
 from config.config import Config
 from config.limiter import limiter
 from extentions.db import migrate, db
 from controllers.AuthController import auth_bp
+from controllers.AnnouncementController import announcement_bp
 from controllers.UserController import user_bp
 from controllers.lockController import lock_bp
 from controllers.ExpertController import expert_bp
@@ -23,6 +25,27 @@ from controllers.ReportController import report_bp
 from controllers.smetaControllers.subjectController import subject_bp
 from controllers.smetaControllers.other_expensesController import other_exp
 from controllers.smetaControllers.servicesTableController import services_bp
+
+def ensure_schema():
+    """Idempotently add columns that `db.create_all()` cannot add to existing
+    tables. `create_all` only creates missing tables; it never ALTERs an
+    existing one, so new columns on the `project` table are added here."""
+    inspector = inspect(db.engine)
+    if 'project' not in inspector.get_table_names():
+        return
+
+    existing_columns = {col['name'] for col in inspector.get_columns('project')}
+    statements = []
+    if 'winner' not in existing_columns:
+        statements.append("ALTER TABLE project ADD COLUMN winner BOOLEAN DEFAULT FALSE")
+    if 'winner_at' not in existing_columns:
+        statements.append("ALTER TABLE project ADD COLUMN winner_at TIMESTAMP")
+
+    if statements:
+        with db.engine.begin() as conn:
+            for statement in statements:
+                conn.execute(text(statement))
+
 
 def main_app():
     load_dotenv()
@@ -58,8 +81,10 @@ def main_app():
     
     with app.app_context():
         db.create_all()
+        ensure_schema()
 
     app.register_blueprint(auth_bp)
+    app.register_blueprint(announcement_bp)
     app.register_blueprint(lock_bp)
     app.register_blueprint(user_bp)
     app.register_blueprint(rent_bp)

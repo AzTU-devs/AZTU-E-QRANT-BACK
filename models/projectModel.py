@@ -24,6 +24,8 @@ class Project(db.Model):
     priotet = db.Column(db.Text)
     submitted = db.Column(db.Boolean, default=False)
     submitted_at = db.Column(db.DateTime)
+    winner = db.Column(db.Boolean, default=False)
+    winner_at = db.Column(db.DateTime)
 
     def project_detail(self):
         return {
@@ -47,5 +49,7 @@ class Project(db.Model):
             'expert': self.expert,
             'priotet': self.priotet,
             'submitted': self.submitted,
-            'submitted_at': self.submitted_at
+            'submitted_at': self.submitted_at,
+            'winner': bool(self.winner),
+            'winner_at': self.winner_at
         }
