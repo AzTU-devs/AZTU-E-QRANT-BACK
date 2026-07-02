@@ -13,6 +13,36 @@ from exceptions.exception import (
 
 announcement_bp = Blueprint('announcement_bp', __name__)
 
+# Announcement content is stored as rich-text HTML produced by the admin editor.
+# It is sanitized on write so the public site / dashboards can render it safely.
+try:
+    import bleach
+except ImportError:  # keep the feature working even if the dep isn't installed yet
+    bleach = None
+
+import re as _re
+
+_ALLOWED_TAGS = [
+    'p', 'br', 'span', 'div',
+    'strong', 'b', 'em', 'i', 'u', 's', 'strike',
+    'ul', 'ol', 'li',
+    'h1', 'h2', 'h3', 'h4',
+    'blockquote', 'a',
+]
+_ALLOWED_ATTRIBUTES = {
+    '*': ['class'],
+    'a': ['href', 'title', 'target', 'rel'],
+}
+
+
+def sanitize_html(raw):
+    """Return a safe HTML subset. Falls back to plain text if bleach is absent."""
+    if not raw:
+        return raw
+    if bleach is None:
+        return _re.sub(r'<[^>]*>', '', raw).strip()
+    return bleach.clean(raw, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRIBUTES, strip=True)
+
 
 @announcement_bp.route('/api/announcements', methods=['GET'])
 @limiter.limit("100 per second")
@@ -56,7 +86,7 @@ def create_announcement():
     try:
         data = request.get_json() or {}
         title = (data.get('title') or '').strip()
-        content = (data.get('content') or '').strip()
+        content = sanitize_html((data.get('content') or '').strip())
 
         if not title or not content:
             return handle_missing_field('title/content')
@@ -100,7 +130,7 @@ def update_announcement(announcement_id):
             announcement.title = new_title
 
         if 'content' in data:
-            new_content = (data.get('content') or '').strip()
+            new_content = sanitize_html((data.get('content') or '').strip())
             if not new_content:
                 return handle_missing_field('content')
             announcement.content = new_content
