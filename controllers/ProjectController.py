@@ -241,7 +241,13 @@ def get_projects():
     current_app.logger.info("GET /api/projects called")
     try:
         project_list = []
-        projects = Project.query.all()
+        # Only the ACTIVE competition's projects appear in the main list.
+        # Previous competitions live in the admin-only archive.
+        active_id = Competition.get_active_id()
+        if active_id is not None:
+            projects = Project.query.filter_by(competition_id=active_id).all()
+        else:
+            projects = Project.query.all()
 
         if not projects:
             current_app.logger.warning("No projects found in database")
@@ -277,7 +283,12 @@ def get_projects_submitted():
     current_app.logger.info("GET /api/projects called")
     try:
         project_list = []
-        projects = Project.query.filter_by(submitted=True).all()
+        # Only the ACTIVE competition's submitted projects.
+        active_id = Competition.get_active_id()
+        query = Project.query.filter_by(submitted=True)
+        if active_id is not None:
+            query = query.filter_by(competition_id=active_id)
+        projects = query.all()
 
         if not projects:
             current_app.logger.warning("No projects found in database")
@@ -303,7 +314,40 @@ def get_projects_submitted():
     except Exception as e:
         current_app.logger.error(f"Exception in /api/projects: {e}", exc_info=True)
         return handle_global_exception(str(e))
-    
+
+
+@project_offer.route('/api/projects/archive', methods=['GET'])
+@limiter.limit("100 per second")
+@token_required([2])
+def get_projects_archive():
+    """Admin-only: all projects from PREVIOUS (non-active) competitions."""
+    current_app.logger.info("GET /api/projects/archive called")
+    try:
+        active_id = Competition.get_active_id()
+        competitions = {c.id: c for c in Competition.query.all()}
+
+        query = Project.query
+        if active_id is not None:
+            query = query.filter(Project.competition_id != active_id)
+        projects = query.all()
+
+        project_list = []
+        for project in projects:
+            data = project.project_detail()
+            user = User.query.filter_by(fin_kod=data.get('fin_kod')).first()
+            data['user'] = {'name': user.name, 'surname': user.surname} if user else None
+            comp = competitions.get(project.competition_id)
+            data['competition_year'] = comp.year if comp else None
+            data['competition_code'] = comp.code if comp else None
+            project_list.append(data)
+
+        project_list.sort(key=lambda x: (x.get('competition_year') or 0), reverse=True)
+        return handle_success(project_list, 'Archived projects fetched successfully.')
+    except Exception as e:
+        current_app.logger.error(f"Exception in /api/projects/archive: {e}", exc_info=True)
+        return handle_global_exception(str(e))
+
+
 @project_offer.route("/api/project/<string:fin_kod>")
 @limiter.limit("100 per second")
 @token_required([0 ,1, 2])
