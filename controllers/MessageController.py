@@ -118,7 +118,7 @@ def _send_message_email(recipient, sender_name, preview):
 
 @message_bp.route('/api/messages/thread', methods=['GET'])
 @limiter.limit("100 per second")
-@token_required([0, 1])
+@token_required([0])
 def get_my_thread():
     """The user's single chat with admin. Marks admin messages as read."""
     try:
@@ -135,7 +135,7 @@ def get_my_thread():
 
 @message_bp.route('/api/messages/thread', methods=['POST'])
 @limiter.limit("50 per second")
-@token_required([0, 1])
+@token_required([0])
 def send_message_as_user():
     """Send a message (text and/or attachments) to admin."""
     try:
@@ -179,7 +179,7 @@ def send_message_as_user():
 
 @message_bp.route('/api/messages/unread-count', methods=['GET'])
 @limiter.limit("100 per second")
-@token_required([0, 1])
+@token_required([0])
 def my_unread_messages():
     try:
         fin_kod = g.user.get('fin_kod')

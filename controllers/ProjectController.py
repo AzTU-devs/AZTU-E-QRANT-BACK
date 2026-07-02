@@ -12,7 +12,7 @@ from models.smetaModels.rentModel import Rent
 from utils.jwt_required import token_required
 from models.smetaModels.smetaModel import Smeta
 from models.collaboratorModel import Collaborator
-from flask import Blueprint, request, current_app
+from flask import Blueprint, request, current_app, g
 from models.collaboratorModel import Collaborator
 from models.smetaModels.salaryModel import Salary
 from models.projectActivities import ProjectActivities
@@ -182,6 +182,55 @@ def set_project_winner():
         return handle_success(project.project_detail(), 'Project winner status updated.')
     except Exception as e:
         db.session.rollback()
+        return handle_global_exception(str(e))
+
+
+@project_offer.route('/api/my-project-history', methods=['GET'])
+@limiter.limit("100 per second")
+@token_required([0, 1, 2])
+def my_project_history():
+    """Every project the signed-in user has been part of across ALL competitions
+    — as lead (owner) and as member (collaborator). Read-only, so a lead who
+    later becomes a member still sees their past projects in the profile."""
+    try:
+        fin_kod = g.user.get('fin_kod')
+        competitions = {c.id: c for c in Competition.query.all()}
+
+        def comp_info(cid):
+            c = competitions.get(cid)
+            return {
+                'competition_year': c.year if c else None,
+                'competition_code': c.code if c else None,
+            }
+
+        history = []
+
+        for p in Project.query.filter_by(fin_kod=fin_kod).all():
+            history.append({
+                'project_code': p.project_code,
+                'project_name': p.project_name,
+                'role': 'lead',
+                'approved': p.approved,
+                'submitted': bool(p.submitted),
+                'winner': bool(p.winner),
+                **comp_info(p.competition_id),
+            })
+
+        for col in Collaborator.query.filter_by(fin_kod=fin_kod).all():
+            proj = Project.query.filter_by(project_code=col.project_code).first()
+            history.append({
+                'project_code': col.project_code,
+                'project_name': proj.project_name if proj else None,
+                'role': 'member',
+                'approved': proj.approved if proj else None,
+                'submitted': bool(proj.submitted) if proj else None,
+                'winner': bool(proj.winner) if proj else None,
+                **comp_info(col.competition_id or (proj.competition_id if proj else None)),
+            })
+
+        history.sort(key=lambda x: (x.get('competition_year') or 0), reverse=True)
+        return handle_success(history, 'Project history fetched successfully.')
+    except Exception as e:
         return handle_global_exception(str(e))
 
 
