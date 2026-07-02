@@ -9,6 +9,8 @@ from config.limiter import limiter
 from extentions.db import migrate, db
 from controllers.AuthController import auth_bp
 from controllers.AnnouncementController import announcement_bp
+from controllers.RoleChangeController import role_change_bp
+from controllers.NotificationController import notification_bp
 from controllers.UserController import user_bp
 from controllers.lockController import lock_bp
 from controllers.ExpertController import expert_bp
@@ -85,6 +87,8 @@ def main_app():
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(announcement_bp)
+    app.register_blueprint(role_change_bp)
+    app.register_blueprint(notification_bp)
     app.register_blueprint(lock_bp)
     app.register_blueprint(user_bp)
     app.register_blueprint(rent_bp)
