@@ -59,6 +59,22 @@ def _user_display(fin_kod):
     }
 
 
+def _attach_sender_names(messages):
+    """Add `sender_name` to each serialized message (resolves the sender's
+    fin_kod to a display name) so the chat can show who is writing — e.g. the
+    lead sees the admin's name."""
+    fins = {m.get('sender_fin_kod') for m in messages if m.get('sender_fin_kod')}
+    if not fins:
+        for m in messages:
+            m['sender_name'] = None
+        return messages
+    users = User.query.filter(User.fin_kod.in_(fins)).all()
+    name_map = {u.fin_kod: (f"{u.name or ''} {u.surname or ''}".strip() or None) for u in users}
+    for m in messages:
+        m['sender_name'] = name_map.get(m.get('sender_fin_kod'))
+    return messages
+
+
 def _save_attachments(message, files):
     """Validate + persist uploaded files as MessageAttachment rows. Returns
     (ok, error_response). Accepts all configured document and image types."""
@@ -127,7 +143,9 @@ def get_my_thread():
         # mark admin -> user messages as read
         Message.query.filter_by(thread_id=thread.id, sender_type='admin', is_read=False).update({'is_read': True})
         db.session.commit()
-        return handle_success(thread.serialize(with_messages=True), "Thread fetched successfully.")
+        data = thread.serialize(with_messages=True)
+        _attach_sender_names(data['messages'])
+        return handle_success(data, "Thread fetched successfully.")
     except Exception as e:
         db.session.rollback()
         return handle_global_exception(str(e))
@@ -228,6 +246,7 @@ def get_thread_admin(user_fin_kod):
         Message.query.filter_by(thread_id=thread.id, sender_type='user', is_read=False).update({'is_read': True})
         db.session.commit()
         data = thread.serialize(with_messages=True)
+        _attach_sender_names(data['messages'])
         data['user'] = _user_display(user_fin_kod)
         return handle_success(data, "Thread fetched successfully.")
     except Exception as e:
