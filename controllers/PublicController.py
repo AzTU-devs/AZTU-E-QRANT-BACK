@@ -200,3 +200,18 @@ def public_announcements():
     except Exception as e:
         current_app.logger.error(f"Exception in /api/public/announcements: {e}", exc_info=True)
         return handle_global_exception(str(e))
+
+
+@public_bp.route('/api/public/announcement/<int:announcement_id>', methods=['GET'])
+@limiter.limit("100 per second")
+def public_announcement_detail(announcement_id):
+    """A single published announcement (for the public detail page)."""
+    current_app.logger.info(f"GET /api/public/announcement/{announcement_id} called")
+    try:
+        announcement = Announcement.query.filter_by(id=announcement_id, published=True).first()
+        if not announcement:
+            return handle_success(None, 'Announcement not found.')
+        return handle_success(announcement.serialize(), 'Announcement fetched successfully.')
+    except Exception as e:
+        current_app.logger.error(f"Exception in /api/public/announcement: {e}", exc_info=True)
+        return handle_global_exception(str(e))

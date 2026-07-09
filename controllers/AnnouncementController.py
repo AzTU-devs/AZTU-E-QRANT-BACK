@@ -30,17 +30,20 @@ _ALLOWED_TAGS = [
     'blockquote', 'a',
 ]
 _ALLOWED_ATTRIBUTES = {
-    '*': ['class'],
+    # `data-list` carries the list type (bullet/ordered) from the Quill editor;
+    # it MUST be kept or lists lose their markers when rendered elsewhere.
+    '*': ['class', 'data-list'],
     'a': ['href', 'title', 'target', 'rel'],
 }
 
 
 def sanitize_html(raw):
-    """Return a safe HTML subset. Falls back to plain text if bleach is absent."""
+    """Return a safe HTML subset. If bleach is unavailable, keep the raw
+    admin-authored HTML (do NOT strip everything — that destroys formatting)."""
     if not raw:
         return raw
     if bleach is None:
-        return _re.sub(r'<[^>]*>', '', raw).strip()
+        return raw
     return bleach.clean(raw, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRIBUTES, strip=True)
 
 
