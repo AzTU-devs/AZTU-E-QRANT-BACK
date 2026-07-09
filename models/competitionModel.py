@@ -16,7 +16,7 @@ class Competition(db.Model):
     application_deadline = db.Column(db.DateTime)
     report_deadline = db.Column(db.DateTime)
     contract_date = db.Column(db.DateTime)
-    max_smeta_amount = db.Column(db.Integer, nullable=False, default=30000)
+    max_smeta_amount = db.Column(db.Integer, nullable=False, default=50000)
     collaborator_limit = db.Column(db.Integer, nullable=False, default=7)
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
     created_by = db.Column(db.String(100))

@@ -536,10 +536,10 @@ def submit_project():
         smeta.other_expenses
     ])
 
-    if total_amount > 30000:
+    if total_amount > 50000:
         return {
             "status": 409,
-            "message": "Total amount is over 30000"
+            "message": "Total amount is over 50000"
         }, 409
 
     project.submitted = True
