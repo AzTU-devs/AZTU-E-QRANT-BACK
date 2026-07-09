@@ -28,12 +28,17 @@ _ALLOWED_TAGS = [
     'ul', 'ol', 'li',
     'h1', 'h2', 'h3', 'h4',
     'blockquote', 'a',
+    # tables (Quill editor)
+    'table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th', 'col', 'colgroup', 'caption',
 ]
 _ALLOWED_ATTRIBUTES = {
     # `data-list` carries the list type (bullet/ordered) from the Quill editor;
-    # it MUST be kept or lists lose their markers when rendered elsewhere.
-    '*': ['class', 'data-list'],
+    # `data-row` groups table cells into rows — both MUST be kept.
+    '*': ['class', 'data-list', 'data-row'],
     'a': ['href', 'title', 'target', 'rel'],
+    'td': ['colspan', 'rowspan'],
+    'th': ['colspan', 'rowspan'],
+    'col': ['span', 'width'],
 }
 
 
