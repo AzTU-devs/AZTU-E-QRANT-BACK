@@ -132,18 +132,14 @@ def update_subject(project_code):
 @token_required([0, 2])
 def delete_subject(project_code, id):
     try:
-        subject = SubjectOfPurchase.query.filter_by(id=id).first()
+        subject = SubjectOfPurchase.query.filter_by(id=id, project_code=project_code).first()
 
         if not subject:
             return jsonify({'error': 'Subject not found with the provided project_code'}), 404
-        
+
         main_smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
-
-        if not main_smeta:
-            main_smeta = Smeta(project_code=project_code)
-            db.session.add(main_smeta)
-
-        main_smeta.total_equipment -= subject.total_amount
+        if main_smeta and main_smeta.total_equipment is not None:
+            main_smeta.total_equipment -= subject.total_amount
 
         db.session.delete(subject)
         db.session.commit()

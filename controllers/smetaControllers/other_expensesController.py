@@ -113,17 +113,14 @@ def delete_other_exp(project_code, id):
             return jsonify({'message': 'other_exp record not found'}), 404
         
         main_smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
-
-        if not main_smeta:
-            main_smeta = Smeta(project_code=project_code)
-            db.session.add(main_smeta)
-
-        main_smeta.other_expenses -= record.total_amount
+        if main_smeta and main_smeta.other_expenses is not None:
+            main_smeta.other_expenses -= record.total_amount
 
         db.session.delete(record)
         db.session.commit()
         return jsonify({'message': 'other_exp record deleted'}), 200
     except Exception as e:
+        db.session.rollback()
         import traceback
         logger.error("Error occurred in delete_other_exp: %s", traceback.format_exc())
         return jsonify({'error': str(e)}), 500

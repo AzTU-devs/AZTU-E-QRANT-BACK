@@ -112,7 +112,8 @@ def get_main_smeta_by_project_code(project_code):
 @token_required([0, 2])
 def update_smeta(project_code):
     data = request.get_json()
-    smeta = Smeta.query.get(project_code)
+    # `.get()` looks up by primary key (id), not project_code — must filter.
+    smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
 
     if not smeta:
         return jsonify({'message': 'Smeta not found'}), 404
@@ -132,7 +133,7 @@ def update_smeta(project_code):
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def delete_smeta(project_code):
-    smeta = Smeta.query.get(project_code)
+    smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
     if not smeta:
         return jsonify({'message': 'Smeta not found'}), 404
 

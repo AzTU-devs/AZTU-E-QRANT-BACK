@@ -167,12 +167,8 @@ def delete_subject(project_code, id):
             return jsonify({'message': 'service not found'}), 404
 
         main_smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
-
-        if not main_smeta:
-            main_smeta = Smeta(project_code=project_code)
-            db.session.add(main_smeta)
-
-        main_smeta.total_services -= service.total_amount
+        if main_smeta and main_smeta.total_services is not None:
+            main_smeta.total_services -= service.total_amount
 
         db.session.delete(service)
         db.session.commit()

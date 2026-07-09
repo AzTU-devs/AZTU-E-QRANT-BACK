@@ -124,15 +124,12 @@ def delete_rent(project_code, id):
             return jsonify({'message': 'Rent record not found'}), 404
         
         main_smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
-
-        if not main_smeta:
-            main_smeta = Smeta(project_code=project_code)
-            db.session.add(main_smeta)
-
-        main_smeta.total_rent -= rent.total_amount
+        if main_smeta and main_smeta.total_rent is not None:
+            main_smeta.total_rent -= rent.total_amount
 
         db.session.delete(rent)
         db.session.commit()
         return jsonify({'message': 'Rent record deleted'}), 200
     except Exception as e:
+        db.session.rollback()
         return jsonify({'error': str(e)}), 400

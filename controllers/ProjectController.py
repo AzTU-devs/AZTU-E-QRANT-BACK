@@ -526,20 +526,26 @@ def submit_project():
         return {'error': 'Project not found for the provided project_code.'}, 404
     smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
 
+    if not smeta:
+        return {"status": 409, "message": "Smeta not found. Fill the budget first."}, 409
+
+    # Guard against None (unused categories) — otherwise sum() raises TypeError.
     total_amount = sum([
-        smeta.total_fee,
-        smeta.total_salary,
-        smeta.defense_fund,
-        smeta.total_equipment,
-        smeta.total_services,
-        smeta.total_rent,
-        smeta.other_expenses
+        smeta.total_fee or 0,
+        smeta.total_salary or 0,
+        smeta.defense_fund or 0,
+        smeta.total_equipment or 0,
+        smeta.total_services or 0,
+        smeta.total_rent or 0,
+        smeta.other_expenses or 0,
     ])
 
-    if total_amount > 50000:
+    # Use the project's configured cap (from the competition) instead of a literal.
+    max_amount = project.max_smeta_amount or 50000
+    if total_amount > max_amount:
         return {
             "status": 409,
-            "message": "Total amount is over 50000"
+            "message": f"Total amount is over {max_amount}"
         }, 409
 
     project.submitted = True

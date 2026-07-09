@@ -190,14 +190,25 @@ def update_salary(project_code):
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def delete_salary(project_code):
-    salary = Salary.query.filter_by(project_code=project_code).first()
+    fin_kod = request.args.get('fin_kod') or (request.get_json(silent=True) or {}).get('fin_kod')
+
+    query = Salary.query.filter_by(project_code=project_code)
+    if fin_kod:
+        query = query.filter_by(fin_kod=fin_kod)
+    salary = query.first()
 
     if not salary:
         return jsonify({'message': 'Salary record not found'}), 404
 
     try:
+        # Keep the aggregate Smeta.total_salary in sync (guard against None).
+        main_smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
+        if main_smeta and main_smeta.total_salary is not None:
+            main_smeta.total_salary -= (salary.total_salary or 0)
+
         db.session.delete(salary)
         db.session.commit()
         return jsonify({'message': 'Salary record deleted'}), 200
     except Exception as e:
+        db.session.rollback()
         return jsonify({'error': str(e)}), 400

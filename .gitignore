@@ -1,0 +1,19 @@
+# Secrets — MUST NOT be committed
+.env
+.env.*
+!.env.example
+
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Uploads (runtime data)
+uploads/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
