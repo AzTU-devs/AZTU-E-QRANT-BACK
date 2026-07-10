@@ -130,10 +130,11 @@ def public_project_detail(project_code):
 @public_bp.route('/api/public/leads-tree', methods=['GET'])
 @limiter.limit("100 per second")
 def public_leads_tree():
-    """Tree of project leads with their projects and approved collaborators."""
+    """Tree of WINNER project leads with their projects and approved collaborators."""
     current_app.logger.info("GET /api/public/leads-tree called")
     try:
-        projects = Project.query.filter_by(approved=1).all()
+        # Public leads page shows only the leads of winner projects.
+        projects = Project.query.filter_by(winner=True).all()
 
         tree = []
         for project in projects:
