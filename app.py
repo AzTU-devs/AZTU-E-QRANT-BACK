@@ -13,6 +13,7 @@ from controllers.RoleChangeController import role_change_bp
 from controllers.NotificationController import notification_bp
 from controllers.CompetitionController import competition_bp
 from controllers.MessageController import message_bp
+from controllers.ProjectFileController import project_file_bp
 from controllers.UserController import user_bp
 from controllers.lockController import lock_bp
 from controllers.ExpertController import expert_bp
@@ -53,6 +54,14 @@ def ensure_schema():
         collab_columns = {col['name'] for col in inspector.get_columns('collaborators')}
         if 'competition_id' not in collab_columns:
             statements.append("ALTER TABLE collaborators ADD COLUMN competition_id INTEGER")
+
+    # CV columns on the User table (name is quoted because of the uppercase U).
+    if 'User' in inspector.get_table_names():
+        user_columns = {col['name'] for col in inspector.get_columns('User')}
+        if 'cv_original_filename' not in user_columns:
+            statements.append('ALTER TABLE "User" ADD COLUMN cv_original_filename VARCHAR')
+        if 'cv_stored_filename' not in user_columns:
+            statements.append('ALTER TABLE "User" ADD COLUMN cv_stored_filename VARCHAR')
 
     if statements:
         with db.engine.begin() as conn:
@@ -102,6 +111,7 @@ def main_app():
     app.register_blueprint(notification_bp)
     app.register_blueprint(competition_bp)
     app.register_blueprint(message_bp)
+    app.register_blueprint(project_file_bp)
     app.register_blueprint(lock_bp)
     app.register_blueprint(user_bp)
     app.register_blueprint(rent_bp)

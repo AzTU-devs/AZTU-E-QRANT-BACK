@@ -36,6 +36,8 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, nullable=False)
     updated_at = db.Column(db.DateTime)
     institution_code = db.Column(db.String)
+    cv_original_filename = db.Column(db.String)
+    cv_stored_filename = db.Column(db.String)
 
     def user_details(self):
         return {
@@ -67,7 +69,9 @@ class User(db.Model):
             "work_email": self.work_email,
             "profile_completed": self.profile_completed,
             "born_date": self.born_date,
-            "institution_code": self.institution_code
+            "institution_code": self.institution_code,
+            "cv_original_filename": self.cv_original_filename,
+            "has_cv": bool(self.cv_stored_filename)
         }
     
     def get_user_image(self):

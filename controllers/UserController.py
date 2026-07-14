@@ -1,10 +1,13 @@
+import os
+import uuid
 import logging
 from extentions.db import db
 from datetime import datetime
 from models.userModel import User
 from models.authModel import Auth
 from config.limiter import limiter
-from flask import Blueprint, request
+from werkzeug.utils import secure_filename
+from flask import Blueprint, request, current_app, send_file, g
 from utils.jwt_required import token_required
 from exceptions.exception import handle_success
 from exceptions.exception import handle_not_found
@@ -179,5 +182,88 @@ def get_all_approved_user():
                 users.append(user_details)
 
         return handle_success(users, "Users fetched successfully")
+    except Exception as e:
+        return handle_global_exception(str(e))
+
+
+# --------------------------------------------------------------- CV upload ----
+
+def _cv_folder():
+    folder = current_app.config['CV_FILES_FOLDER']
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def _cv_allowed(filename):
+    if '.' not in filename:
+        return False
+    return filename.rsplit('.', 1)[1].lower() in current_app.config['ALLOWED_CV_EXTENSIONS']
+
+
+@user_bp.route('/api/profile/<string:fin_kod>/cv', methods=['POST'])
+@limiter.limit("20 per second")
+@token_required([0, 1, 2])
+def upload_cv(fin_kod):
+    """Upload/replace the user's CV (part of the personal data)."""
+    try:
+        # Users may only upload their own CV; admins may upload for anyone.
+        if g.user.get('role') != 2 and g.user.get('fin_kod') != fin_kod:
+            return {"status": 403, "message": "Bu əməliyyata icazəniz yoxdur."}, 403
+
+        user = User.query.filter_by(fin_kod=fin_kod).first()
+        if not user:
+            return handle_not_found(404)
+
+        file = request.files.get('cv') or (request.files.getlist('files') or [None])[0]
+        if not file or not file.filename:
+            return {"status": 400, "message": "Fayl seçilməyib."}, 400
+        if not _cv_allowed(file.filename):
+            allowed = ', '.join(sorted(current_app.config['ALLOWED_CV_EXTENSIONS']))
+            return {"status": 400, "message": f"Yalnız {allowed} formatları qəbul edilir."}, 400
+
+        file.seek(0, os.SEEK_END)
+        size = file.tell()
+        file.seek(0)
+        if size > current_app.config['MAX_CV_FILE_SIZE']:
+            mb = current_app.config['MAX_CV_FILE_SIZE'] // (1024 * 1024)
+            return {"status": 400, "message": f"Fayl çox böyükdür (maks. {mb} MB)."}, 400
+
+        folder = _cv_folder()
+        original_name = secure_filename(file.filename) or 'cv'
+        ext = original_name.rsplit('.', 1)[1].lower()
+        stored_name = f"{uuid.uuid4().hex}.{ext}"
+
+        # Remove the previous CV file if present.
+        if user.cv_stored_filename:
+            old_path = os.path.join(folder, user.cv_stored_filename)
+            if os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                except OSError:
+                    pass
+
+        file.save(os.path.join(folder, stored_name))
+        user.cv_original_filename = original_name
+        user.cv_stored_filename = stored_name
+        db.session.commit()
+
+        return handle_success({"cv_original_filename": original_name, "has_cv": True}, "CV yükləndi.")
+    except Exception as e:
+        db.session.rollback()
+        return handle_global_exception(str(e))
+
+
+@user_bp.route('/api/profile/<string:fin_kod>/cv', methods=['GET'])
+@limiter.limit("50 per second")
+@token_required([0, 1, 2])
+def download_cv(fin_kod):
+    try:
+        user = User.query.filter_by(fin_kod=fin_kod).first()
+        if not user or not user.cv_stored_filename:
+            return handle_not_found(404)
+        path = os.path.join(current_app.config['CV_FILES_FOLDER'], user.cv_stored_filename)
+        if not os.path.exists(path):
+            return handle_not_found(404)
+        return send_file(path, as_attachment=True, download_name=user.cv_original_filename or 'cv')
     except Exception as e:
         return handle_global_exception(str(e))

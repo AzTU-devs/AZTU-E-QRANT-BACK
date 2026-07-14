@@ -37,3 +37,18 @@ class Config:
 
     # Hər əlavənin maksimum ölçüsü: 25 MB
     MAX_MESSAGE_FILE_SIZE = 25 * 1024 * 1024
+
+    # ------- CV (şəxsi məlumat) yükləməsi -------
+    CV_FILES_FOLDER = os.path.join(UPLOAD_FOLDER, 'cv_files')
+    ALLOWED_CV_EXTENSIONS = {'pdf', 'doc', 'docx'}
+    MAX_CV_FILE_SIZE = 15 * 1024 * 1024
+
+    # ------- Layihə faylları (sayı limitsiz) -------
+    PROJECT_FILES_FOLDER = os.path.join(UPLOAD_FOLDER, 'project_files')
+    ALLOWED_PROJECT_FILE_EXTENSIONS = {
+        'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
+        'txt', 'csv', 'rtf', 'odt', 'ods', 'odp',
+        'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'heic', 'tiff',
+        'zip', 'rar', '7z',
+    }
+    MAX_PROJECT_FILE_SIZE = 50 * 1024 * 1024
