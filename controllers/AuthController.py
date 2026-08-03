@@ -298,6 +298,13 @@ def send_otp(
 
         email = user.work_email
 
+        if not email:
+            logger.error("User %s has no work_email — cannot deliver OTP.", fin_kod)
+            return {
+                "status": 422,
+                "message": "İstifadəçinin e-poçt ünvanı qeydə alınmayıb."
+            }, 422
+
         subject = "OTP"
         recipient = email
 
@@ -318,7 +325,15 @@ def send_otp(
         db.session.refresh(new_otp)
 
         html_content = render_template("email/otp_verification.html", name=user.name, otp_code=otp)
-        send_email(subject, recipient, html_content)
+
+        # The OTP is worthless if the mail never leaves, so a delivery failure
+        # must surface instead of being reported as success.
+        if not send_email(subject, recipient, html_content):
+            logger.error("OTP generated for %s but the email could not be sent.", fin_kod)
+            return {
+                "status": 502,
+                "message": "OTP e-poçtu göndərilə bilmədi. Zəhmət olmasa bir azdan yenidən cəhd edin."
+            }, 502
 
         return handle_success(fin_kod, "OTP sent successfully")
     
