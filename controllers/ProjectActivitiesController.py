@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from extentions.db import db
 from models.projectActivities import ProjectActivities
+from utils.archive_lock import archive_write_blocked
 
 project_activity = Blueprint('project_activity', __name__)
 
@@ -12,6 +13,10 @@ def create_activity():
         for field in required_fields:
             if field not in data:
                 return jsonify({"error": f"{field} is required"}), 400
+
+        blocked = archive_write_blocked(data['project_code'])
+        if blocked:
+            return blocked
 
         new_activity = ProjectActivities(
             activity_name=data['activity_name'],
@@ -61,6 +66,10 @@ def get_activities_by_project_code(project_code):
 @project_activity.route('/api/project-activity/<int:project_code>/<int:month>', methods=['DELETE'])
 def delete_activity_by_month(project_code, month):
     try:
+        blocked = archive_write_blocked(project_code)
+        if blocked:
+            return blocked
+
         activity = ProjectActivities.query.filter_by(project_code=project_code, month=month).first()
 
         if not activity:
@@ -84,6 +93,10 @@ def update_activity(id):
         activity = ProjectActivities.query.get(id)
         if not activity:
             return jsonify({"message": "Activity not found"}), 404
+
+        blocked = archive_write_blocked(activity.project_code)
+        if blocked:
+            return blocked
 
         if 'activity_name' in data:
             activity.activity_name = data['activity_name']
@@ -118,6 +131,10 @@ def delete_activity(id):
         activity = ProjectActivities.query.get(id)
         if not activity:
             return jsonify({"message": "Activity not found"}), 404
+
+        blocked = archive_write_blocked(activity.project_code)
+        if blocked:
+            return blocked
 
         db.session.delete(activity)
         db.session.commit()

@@ -10,6 +10,7 @@ from models.prioritetModel import Priotet
 from models.competitionModel import Competition
 from models.smetaModels.rentModel import Rent
 from utils.jwt_required import token_required
+from utils.archive_lock import project_is_archived, ARCHIVE_LOCKED_MESSAGE
 from models.smetaModels.smetaModel import Smeta
 from models.collaboratorModel import Collaborator
 from flask import Blueprint, request, current_app, g
@@ -25,9 +26,48 @@ project_offer = Blueprint('project_offer', __name__)
 
 def generate_unique_project_code():
     while True:
-        code = random.randint(10000000, 99999999) 
+        code = random.randint(10000000, 99999999)
         if not Project.query.filter_by(project_code=code).first():
             return code
+
+
+def resolve_writable_project(fin_kod, project_code=None):
+    """Find the project the caller is allowed to write to.
+
+    Without `project_code` this is the caller's project in the ACTIVE
+    competition — the historical behaviour, unchanged. With a `project_code`
+    an ARCHIVED project may also be targeted, but only when an admin has
+    unlocked it for editing (`edit_unlocked`).
+
+    Returns `(project, error)`; `error` is a ready-to-return Flask response
+    tuple when the request must be refused, otherwise None. A None project
+    with a None error means "nothing found for this fin_kod" and is left to
+    the caller to phrase.
+    """
+    if project_code is None:
+        active_id = Competition.get_active_id()
+        return Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first(), None
+
+    # The clients hold the code as a string in places; the column is an INTEGER.
+    try:
+        project_code = int(project_code)
+    except (TypeError, ValueError):
+        return None, ({'error': 'project_code must be a number.'}, 400)
+
+    project = Project.query.filter_by(project_code=project_code).first()
+    if not project:
+        return None, ({'error': 'Project not found for the provided project_code.'}, 404)
+
+    # A lead only ever touches their own row; admins act on any project.
+    # The identity comes from the TOKEN — a body-supplied fin_kod would let a
+    # lead address someone else's project by naming its owner.
+    if g.user.get('role') != 2 and project.fin_kod != g.user.get('fin_kod'):
+        return None, ({'error': 'This project belongs to another user.'}, 403)
+
+    if project_is_archived(project) and not project.edit_unlocked:
+        return None, ({'error': ARCHIVE_LOCKED_MESSAGE, 'status': 403}, 403)
+
+    return project, None
 
 @project_offer.route('/api/save/project', methods=['POST'])
 @limiter.limit("100 per second")
@@ -42,26 +82,35 @@ def save_project():
         current_app.logger.warning("Missing fin_kod in request")
         return handle_missing_field(404)
 
-    # Scope to the ACTIVE competition so a returning user creates a NEW project
-    # each season instead of overwriting last year's row.
-    active = Competition.get_active()
-    active_id = active.id if active else None
-
-    project = Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
-    if not project:
-        current_app.logger.info(f"No project for fin_kod={fin_kod} in active competition, creating new one.")
-        project = Project(
-            fin_kod=fin_kod,
-            project_code=generate_unique_project_code(),
-            competition_id=active_id
-        )
-        # Snapshot the competition's limits onto the project.
-        if active:
-            project.collaborator_limit = active.collaborator_limit
-            project.max_smeta_amount = active.max_smeta_amount
-        db.session.add(project)
+    # An explicit project_code targets one specific project — that is how an
+    # unlocked ARCHIVED project is edited. Never auto-create in that mode.
+    project_code = data.get('project_code')
+    if project_code is not None:
+        project, error = resolve_writable_project(fin_kod, project_code)
+        if error:
+            return error
+        current_app.logger.info(f"Updating project_code={project_code} (explicit target)")
     else:
-        current_app.logger.info(f"Updating existing project with fin_kod={fin_kod} in active competition")
+        # Scope to the ACTIVE competition so a returning user creates a NEW project
+        # each season instead of overwriting last year's row.
+        active = Competition.get_active()
+        active_id = active.id if active else None
+
+        project = Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
+        if not project:
+            current_app.logger.info(f"No project for fin_kod={fin_kod} in active competition, creating new one.")
+            project = Project(
+                fin_kod=fin_kod,
+                project_code=generate_unique_project_code(),
+                competition_id=active_id
+            )
+            # Snapshot the competition's limits onto the project.
+            if active:
+                project.collaborator_limit = active.collaborator_limit
+                project.max_smeta_amount = active.max_smeta_amount
+            db.session.add(project)
+        else:
+            current_app.logger.info(f"Updating existing project with fin_kod={fin_kod} in active competition")
 
     for field in [
         'project_name', 'project_purpose', 'project_annotation',
@@ -185,6 +234,78 @@ def set_project_winner():
         return handle_global_exception(str(e))
 
 
+@project_offer.route("/api/project/archive/edit-access", methods=['POST'])
+@limiter.limit("100 per second")
+@token_required([2])
+def set_archive_edit_access():
+    """Admin-only: open / close an ARCHIVED project so its owner can edit it.
+
+    `unlocked` is optional; when omitted the flag is toggled."""
+    try:
+        data = request.get_json() or {}
+
+        project_code = data.get('project_code')
+        if project_code is None:
+            return handle_missing_field('project_code')
+
+        try:
+            project_code = int(project_code)
+        except (TypeError, ValueError):
+            return {'error': 'project_code must be a number.'}, 400
+
+        project = Project.query.filter_by(project_code=project_code).first()
+        if not project:
+            return {'error': 'Project not found for the provided project_code.', 'status': 404}, 404
+
+        # The active competition is editable by its own rules — there is
+        # nothing to unlock there, and unlocking it would be misleading.
+        if not project_is_archived(project):
+            return {
+                'error': 'This project belongs to the active competition, not the archive.',
+                'status': 409
+            }, 409
+
+        unlocked_value = data.get('unlocked')
+        new_state = (not bool(project.edit_unlocked)) if unlocked_value is None else bool(unlocked_value)
+
+        project.edit_unlocked = new_state
+        project.edit_unlocked_at = datetime.utcnow() if new_state else None
+        project.edit_unlocked_by = g.user.get('fin_kod') if new_state else None
+        db.session.commit()
+
+        message = 'Archived project unlocked for editing.' if new_state else 'Archived project locked again.'
+        return handle_success(project.project_detail(), message)
+    except Exception as e:
+        db.session.rollback()
+        return handle_global_exception(str(e))
+
+
+@project_offer.route("/api/archive/project/<int:project_code>", methods=['GET'])
+@limiter.limit("100 per second")
+@token_required([0, 2])
+def get_archived_project_for_edit(project_code):
+    """The owner's (or an admin's) view of an archived project that has been
+    unlocked — the payload backing the archive edit form."""
+    try:
+        fin_kod = g.user.get('fin_kod')
+        project, error = resolve_writable_project(fin_kod, project_code)
+        if error:
+            return error
+
+        priotet_obj = Priotet.query.filter_by(prioritet_code=project.priotet).first()
+        competition = Competition.query.filter_by(id=project.competition_id).first()
+
+        data = project.project_detail()
+        data['priotet_name'] = priotet_obj.prioritet_name if priotet_obj else None
+        data['competition_year'] = competition.year if competition else None
+        data['competition_code'] = competition.code if competition else None
+        data['archived'] = project_is_archived(project)
+
+        return handle_success(data, 'Archived project fetched successfully.')
+    except Exception as e:
+        return handle_global_exception(str(e))
+
+
 @project_offer.route('/api/my-project-history', methods=['GET'])
 @limiter.limit("100 per second")
 @token_required([0, 1, 2])
@@ -195,17 +316,20 @@ def my_project_history():
     try:
         fin_kod = g.user.get('fin_kod')
         competitions = {c.id: c for c in Competition.query.all()}
+        active_id = Competition.get_active_id()
 
         def comp_info(cid):
             c = competitions.get(cid)
             return {
                 'competition_year': c.year if c else None,
                 'competition_code': c.code if c else None,
+                'archived': active_id is not None and cid != active_id,
             }
 
         history = []
 
         for p in Project.query.filter_by(fin_kod=fin_kod).all():
+            info = comp_info(p.competition_id)
             history.append({
                 'project_code': p.project_code,
                 'project_name': p.project_name,
@@ -213,7 +337,9 @@ def my_project_history():
                 'approved': p.approved,
                 'submitted': bool(p.submitted),
                 'winner': bool(p.winner),
-                **comp_info(p.competition_id),
+                # Only a lead edits, and only once an admin unlocked the archived row.
+                'editable': info['archived'] and bool(p.edit_unlocked),
+                **info,
             })
 
         for col in Collaborator.query.filter_by(fin_kod=fin_kod).all():
@@ -225,6 +351,7 @@ def my_project_history():
                 'approved': proj.approved if proj else None,
                 'submitted': bool(proj.submitted) if proj else None,
                 'winner': bool(proj.winner) if proj else None,
+                'editable': False,
                 **comp_info(col.competition_id or (proj.competition_id if proj else None)),
             })
 
@@ -396,12 +523,13 @@ def update_project_offer():
     if not fin_kod:
         return {'error': 'fin_kod field is required to update a project.'}, 400
 
-    active_id = Competition.get_active_id()
-    project = Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
+    # With a project_code an unlocked ARCHIVED project may be targeted too.
+    project, error = resolve_writable_project(fin_kod, data.get('project_code'))
+    if error:
+        return error
     if not project:
         return {'error': 'Project not found for the provided fin_kod.'}, 404
 
-    
     updatable_fields = [
         'project_name', 'project_purpose', 'project_annotation',
         'project_key_words', 'project_scientific_idea', 'project_structure',
@@ -435,8 +563,10 @@ def delete_project_offer():
     if not fin_kod:
         return {'error': 'fin_kod parameter is required.'}, 400
 
-    active_id = Competition.get_active_id()
-    project = Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
+    # With a project_code an unlocked ARCHIVED project may be deleted too.
+    project, error = resolve_writable_project(fin_kod, data.get('project_code'))
+    if error:
+        return error
 
     if not project:
         return {'error': 'Project not found for the provided fin_kod.'}, 404

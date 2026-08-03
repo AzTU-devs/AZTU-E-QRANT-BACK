@@ -8,6 +8,7 @@ from utils.email_util import send_email
 from models.projectModel import Project
 from utils.decarator import role_required
 from utils.jwt_required import token_required
+from utils.archive_lock import archive_write_blocked
 from models.collaboratorModel import Collaborator
 from exceptions.exception import handle_not_found
 from flask import Blueprint, request, render_template
@@ -196,6 +197,10 @@ def be_collaborator():
             logger.debug("Project not found.")
             return handle_specific_not_found("Project not found.")
 
+        blocked = archive_write_blocked(project_code)
+        if blocked:
+            return blocked
+
         profile_approved = User.query.filter_by(fin_kod=fin_kod).first().profile_completed
 
         if not profile_approved:
@@ -237,6 +242,11 @@ def approve_collaborator(fin_kod):
         if not collaborator:
             return handle_specific_not_found("Collaborator not found.")
         project_code = collaborator.project_code
+
+        blocked = archive_write_blocked(project_code)
+        if blocked:
+            return blocked
+
         email = User.query.filter_by(fin_kod=fin_kod).first().work_email
 
         project = Project.query.filter_by(project_code=project_code).first()
@@ -272,6 +282,11 @@ def reject_collaborator(fin_kod):
             return handle_specific_not_found("Collaborator not found.")
         
         project_code = collaborator.project_code
+
+        blocked = archive_write_blocked(project_code)
+        if blocked:
+            return blocked
+
         email = User.query.filter_by(fin_kod=fin_kod).first().work_email
 
         project = Project.query.filter_by(project_code=project_code).first()

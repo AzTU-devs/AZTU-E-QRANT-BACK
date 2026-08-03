@@ -47,6 +47,13 @@ def ensure_schema():
         statements.append("ALTER TABLE project ADD COLUMN winner_at TIMESTAMP")
     if 'competition_id' not in existing_columns:
         statements.append("ALTER TABLE project ADD COLUMN competition_id INTEGER")
+    # Per-project editing unlock for archived (previous competition) projects.
+    if 'edit_unlocked' not in existing_columns:
+        statements.append("ALTER TABLE project ADD COLUMN edit_unlocked BOOLEAN DEFAULT FALSE")
+    if 'edit_unlocked_at' not in existing_columns:
+        statements.append("ALTER TABLE project ADD COLUMN edit_unlocked_at TIMESTAMP")
+    if 'edit_unlocked_by' not in existing_columns:
+        statements.append("ALTER TABLE project ADD COLUMN edit_unlocked_by VARCHAR(100)")
 
     # collaborators.competition_id (additive, safe). The UNIQUE-constraint swap is
     # intentionally NOT done here — it is applied via the provided SQL migration.

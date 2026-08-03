@@ -7,6 +7,7 @@ from flask import Blueprint, request, current_app, send_file, g
 from werkzeug.utils import secure_filename
 from models.projectFileModel import ProjectFile
 from utils.jwt_required import token_required
+from utils.archive_lock import archive_write_blocked
 from exceptions.exception import handle_specific_not_found, handle_success, handle_global_exception
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,10 @@ def list_project_files(project_code):
 def upload_project_files(project_code):
     """Upload one or more files to a project — no limit on the number of files."""
     try:
+        blocked = archive_write_blocked(project_code)
+        if blocked:
+            return blocked
+
         files = request.files.getlist('files')
         if not files or all(not f or not f.filename for f in files):
             return {"status": 400, "message": "Fayl seçilməyib."}, 400
@@ -105,6 +110,10 @@ def delete_project_file(file_id):
         record = ProjectFile.query.get(file_id)
         if not record:
             return handle_specific_not_found('File not found.')
+
+        blocked = archive_write_blocked(record.project_code)
+        if blocked:
+            return blocked
 
         path = os.path.join(current_app.config['PROJECT_FILES_FOLDER'], record.stored_filename)
         if os.path.exists(path):

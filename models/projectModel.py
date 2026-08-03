@@ -32,6 +32,11 @@ class Project(db.Model):
     winner = db.Column(db.Boolean, default=False)
     winner_at = db.Column(db.DateTime)
     competition_id = db.Column(db.Integer)  # FK-by-convention -> competitions.id
+    # Projects of PREVIOUS competitions (the archive) are read-only by default.
+    # An admin flips this flag to hand the project back to its owner for edits.
+    edit_unlocked = db.Column(db.Boolean, default=False)
+    edit_unlocked_at = db.Column(db.DateTime)
+    edit_unlocked_by = db.Column(db.String(100))  # fin_kod of the admin
 
     def project_detail(self):
         return {
@@ -58,5 +63,8 @@ class Project(db.Model):
             'submitted_at': self.submitted_at,
             'winner': bool(self.winner),
             'winner_at': self.winner_at,
-            'competition_id': self.competition_id
+            'competition_id': self.competition_id,
+            'edit_unlocked': bool(self.edit_unlocked),
+            'edit_unlocked_at': self.edit_unlocked_at,
+            'edit_unlocked_by': self.edit_unlocked_by
         }
