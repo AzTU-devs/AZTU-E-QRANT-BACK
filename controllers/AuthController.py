@@ -8,7 +8,7 @@ from models.userModel import db, User
 from utils.email_util import send_email
 from models.projectModel import  Project
 from models.competitionModel import Competition
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from utils.jwt_required import token_required
 from exceptions.exception import handle_creation
 from exceptions.exception import handle_conflict
@@ -360,8 +360,15 @@ def validate_otp(fin_kod: str, otp: int):
         if not sent_otp:
             return handle_not_found("OTP not found.")
 
-        now_utc = datetime.utcnow()
+        # `Otp.expires_at` is DateTime(timezone=True), so Postgres hands it back
+        # tz-aware — comparing it with a naive utcnow() raises TypeError.
+        now_utc = datetime.now(timezone.utc)
         otp_expiry = sent_otp.expires_at
+
+        # Rows written before the column carried a timezone come back naive;
+        # they were stored as UTC, so label them as such.
+        if otp_expiry.tzinfo is None:
+            otp_expiry = otp_expiry.replace(tzinfo=timezone.utc)
 
         if now_utc > otp_expiry:
             return {"statusCode": 400, "message": "OTP has expired."}, 400
