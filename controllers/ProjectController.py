@@ -141,12 +141,22 @@ def save_project():
 
     db.session.commit()
 
+    # The code is returned so a form that started without one (a brand-new
+    # project is created by this very call) can address the row from now on.
     if project.approved == 1:
         current_app.logger.info("Project fully submitted and approved=1.")
-        return {'message': 'Project fully submitted and approved=1.'}, 200
+        return {
+            'message': 'Project fully submitted and approved=1.',
+            'project_code': project.project_code,
+            'approved': project.approved,
+        }, 200
     else:
         current_app.logger.info("Project draft saved with approved=0.")
-        return {'message': 'Project draft saved with approved=0.'}, 200
+        return {
+            'message': 'Project draft saved with approved=0.',
+            'project_code': project.project_code,
+            'approved': project.approved,
+        }, 200
     
 def serialize_project(project):
     return {
@@ -174,19 +184,29 @@ def approve_project():
         project_details = request.get_json()
 
         fin_kod = project_details.get('fin_kod')
-        project_code = project_details.get('project_code')
+        # The form starts with an empty project_code and only learns the real
+        # one after the first save; treat "" as "not supplied" so the lookup
+        # falls back to this user's project in the active competition instead
+        # of asking Postgres to compare an INTEGER against ''.
+        project_code = project_details.get('project_code') or None
 
         user = Auth.query.filter_by(fin_kod=fin_kod).first()
 
         if not user:
-            return handle_specific_not_found('User not found.')
-        
-        project = Project.query.filter_by(project_code=project_code,  fin_kod=fin_kod).first()
+            return {'error': 'User not found.', 'status': 404}, 404
+
+        project, error = resolve_writable_project(fin_kod, project_code)
+        if error:
+            return error
 
         if not project:
-            return handle_specific_not_found('Project not found.')
-        
-        profile_approved = User.query.filter_by(fin_kod=fin_kod).first().profile_completed
+            return {'error': 'Project not found for the provided fin_kod.', 'status': 404}, 404
+
+        user_profile = User.query.filter_by(fin_kod=fin_kod).first()
+        if not user_profile:
+            return {'error': 'User profile not found.', 'status': 404}, 404
+
+        profile_approved = user_profile.profile_completed
 
         if not profile_approved:
             return {'error': 'User profile is not completed.', 'status': 403}, 403
@@ -487,6 +507,11 @@ def get_project_by_fin_kod(fin_kod):
         
         active_id = Competition.get_active_id()
         project = Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
+
+        # A user who has not started a proposal this season has no row yet —
+        # that is an empty form, not a server error.
+        if not project:
+            return {'error': 'No project for this user in the active competition.', 'status': 404}, 404
 
         return handle_success(project.project_detail(), 'Project fetched successfully')
     except Exception as e:
