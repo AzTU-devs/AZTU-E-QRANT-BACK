@@ -600,10 +600,20 @@ def delete_project_offer():
     # if project.approved == 1:
     #     return {'error': 'Approved projects cannot be deleted.'}, 403
 
+    # The team goes with the project. A collaborator row that outlives its
+    # project still occupies the person's one (fin_kod, competition_id) slot,
+    # which would silently bar them from joining any other project this season.
+    collaborators = Collaborator.query.filter_by(project_code=project.project_code).all()
+    for collaborator in collaborators:
+        db.session.delete(collaborator)
+
     db.session.delete(project)
     db.session.commit()
 
-    return {'message': 'Project successfully deleted.'}, 200
+    return {
+        'message': 'Project successfully deleted.',
+        'removed_collaborators': len(collaborators)
+    }, 200
 
 @project_offer.route("/api/project-details/<int:project_code>", methods=['GET'])
 @limiter.limit("100 per second")
@@ -714,8 +724,17 @@ def submit_project():
 @limiter.limit("100 per second")
 @token_required([1])
 def collaborator_projet(fin_kod):
-    collaborator = Collaborator.query.filter_by(fin_kod=fin_kod).first()
-    
+    # Read your OWN membership only, and only for the ACTIVE competition — the
+    # same resolution sign-in uses, so a past season's row cannot resurface as
+    # "the project I work on".
+    if fin_kod != g.user.get('fin_kod'):
+        return {'error': 'You can only read your own project.'}, 403
+
+    active_id = Competition.get_active_id()
+    collaborator = Collaborator.query.filter_by(
+        fin_kod=fin_kod, competition_id=active_id
+    ).first()
+
     if not collaborator or not collaborator.approved:
         return {'error': 'Collaborator not found'}, 404
     

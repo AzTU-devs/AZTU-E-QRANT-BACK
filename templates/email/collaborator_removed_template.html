@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="az">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>İcraçı Təyinatı</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 0;
+        }
+
+        .email-container {
+            max-width: 600px;
+            margin: 40px auto;
+            background-color: #ffffff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .logo img {
+            max-width: 150px;
+        }
+
+        .content {
+            font-size: 16px;
+            color: #333333;
+            line-height: 1.6;
+        }
+
+        .footer {
+            margin-top: 30px;
+            font-size: 12px;
+            color: #888888;
+            text-align: center;
+        }
+
+        .btn {
+            display: inline-block;
+            padding: 10px 20px;
+            margin-top: 20px;
+            background-color: #0047ab;
+            color: #ffffff;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+
+        .btn:hover {
+            background-color: #003580;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="email-container">
+        <div class="logo">
+            <img src="https://imgs.search.brave.com/hcawfAioy7RG_dHYiHZA1RPCREUq0M-9zZh4MvNLxjo/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly93d3cu/dG9wdW5pdmVyc2l0/aWVzLmNvbS9zaXRl/cy9kZWZhdWx0L2Zp/bGVzL3Byb2ZpbGVz/L2xvZ29zLzIxMTAw/NzA3NTEzNmFtNjU5/NTE4YXp0dS1sb2dv/LWF6MjAweDIwMC1l/bi0yMDB4MjAwLmpw/Zw"
+                alt="Azerbaijan Technical University Logo">
+        </div>
+        <div class="content">
+            <h2>Hörmətli icraçı,</h2>
+            <p>
+                <strong>Azərbaycan Texniki Universiteti</strong>nin daxili qrant müsabiqəsi çərçivəsində
+                <strong>{{ project.project_name or "layihə" }}</strong> layihəsinin icraçıları siyahısından çıxarıldığınızı bildiririk.
+            </p>
+            <p>
+                Bu qərar layihə rəhbəri və ya administrator tərəfindən verilib.
+                Müsabiqə çərçivəsində artıq heç bir layihəyə bağlı deyilsiniz və
+                <strong>istənilən digər layihəyə yenidən müraciət edə bilərsiniz</strong>.
+            </p>
+            <p>
+                Əlavə sualınız yaranarsa, bizimlə əlaqə saxlaya bilərsiniz.
+            </p>
+        </div>
+        <div class="footer">
+            © 2025 Azerbaijan Technical University. All rights reserved.
+        </div>
+    </div>
+</body>
+
+</html>

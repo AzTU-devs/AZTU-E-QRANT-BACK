@@ -21,8 +21,13 @@ def handle_not_found(e):
     return jsonify({"status" : 404, "message": "User not found", "error_code":  "NOT_FOUND"}), 404
 
 @app.errorhandler(404)
-def handle_specific_not_found(e ,message):
-    return jsonify({"status": 404, "message" : message, "error_code" : "NOT_FOUND"})
+def handle_specific_not_found(message, legacy_message=None):
+    # Declared long ago as (e, message), but every call site passes only the
+    # message — which raised a TypeError and surfaced as a 500 with a Python
+    # error string. The second parameter keeps the old two-argument shape working.
+    if legacy_message is not None:
+        message = legacy_message
+    return jsonify({"status": 404, "message" : message, "error_code" : "NOT_FOUND"}), 404
 
 # handle missing_field error
 
