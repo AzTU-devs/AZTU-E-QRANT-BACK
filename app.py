@@ -31,6 +31,30 @@ from controllers.smetaControllers.subjectController import subject_bp
 from controllers.smetaControllers.other_expensesController import other_exp
 from controllers.smetaControllers.servicesTableController import services_bp
 
+def collaborator_unique_statements(existing_uniques):
+    """DDL that swaps the collaborator uniqueness rule, given what is there now.
+
+    A person may now join SEVERAL projects per competition, so the old
+    one-slot-per-person rules — UNIQUE (fin_kod) and its successor
+    UNIQUE (fin_kod, competition_id) — give way to "never the same project
+    twice". Returns an empty list once the swap has happened, which is what
+    makes calling this on every boot harmless.
+    """
+    superseded = ({'fin_kod'}, {'fin_kod', 'competition_id'})
+    statements = [
+        f'ALTER TABLE collaborators DROP CONSTRAINT "{c["name"]}"'
+        for c in existing_uniques
+        if set(c['column_names']) in superseded
+    ]
+
+    if not any(set(c['column_names']) == {'fin_kod', 'project_code'} for c in existing_uniques):
+        statements.append(
+            "ALTER TABLE collaborators ADD CONSTRAINT uq_collaborator_fin_project "
+            "UNIQUE (fin_kod, project_code)"
+        )
+    return statements
+
+
 def ensure_schema():
     """Idempotently add columns that `db.create_all()` cannot add to existing
     tables. `create_all` only creates missing tables; it never ALTERs an
@@ -55,12 +79,26 @@ def ensure_schema():
     if 'edit_unlocked_by' not in existing_columns:
         statements.append("ALTER TABLE project ADD COLUMN edit_unlocked_by VARCHAR(100)")
 
-    # collaborators.competition_id (additive, safe). The UNIQUE-constraint swap is
-    # intentionally NOT done here — it is applied via the provided SQL migration.
+    # collaborators.competition_id (additive, safe).
     if 'collaborators' in inspector.get_table_names():
         collab_columns = {col['name'] for col in inspector.get_columns('collaborators')}
         if 'competition_id' not in collab_columns:
             statements.append("ALTER TABLE collaborators ADD COLUMN competition_id INTEGER")
+
+        # Let a person join SEVERAL projects per competition. This one IS done
+        # here (unlike the earlier competition swap, which shipped as SQL only)
+        # because the feature is simply broken until it runs — the database
+        # would refuse the second application.
+        # migrations_sql/2026_08_multi_project_collaboration.sql does the same
+        # for anyone applying it by hand.
+        #
+        # ALTER TABLE ... DROP/ADD CONSTRAINT is Postgres syntax that SQLite
+        # cannot parse, so a dev running on SQLite is left alone — `create_all`
+        # builds the current constraint there anyway.
+        if db.engine.dialect.name == 'postgresql':
+            statements.extend(collaborator_unique_statements(
+                inspector.get_unique_constraints('collaborators')
+            ))
 
     # CV columns on the User table (name is quoted because of the uppercase U).
     if 'User' in inspector.get_table_names():

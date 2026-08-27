@@ -155,15 +155,21 @@ def signin():
         # season's project, not a previous year's.
         active_id = Competition.get_active_id()
 
+        # Teams a person joined this season. A lead may take part in one project
+        # besides the one they run, so this is read for BOTH roles — but for a
+        # lead `project_code` stays the project they own.
+        collaborations = Collaborator.query.filter_by(
+            fin_kod=fin_kod, competition_id=active_id
+        ).all()
+        is_collaborator = bool(collaborations)
+        collaborator_project_codes = [c.project_code for c in collaborations]
+
         if project_role == 0:
             project_owner = Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
             project_code = project_owner.project_code if project_owner else None
 
-        elif project_role == 1:
-            collaborator = Collaborator.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
-            if collaborator:
-                project_code = collaborator.project_code
-                is_collaborator = True
+        elif project_role == 1 and collaborations:
+            project_code = collaborations[0].project_code
 
         user_data = User.query.filter_by(fin_kod=fin_kod).first()
         if user_data is None:
@@ -175,6 +181,7 @@ def signin():
         signin_data = {
             "auth": auth_data.auth_details(),
             "project_code": project_code,
+            "collaborator_project_codes": collaborator_project_codes,
             "profile_completed": profile_completed,
             "is_collaborator": is_collaborator
         }

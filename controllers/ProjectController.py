@@ -722,26 +722,30 @@ def submit_project():
 
 @project_offer.route("/api/col-project/<string:fin_kod>")
 @limiter.limit("100 per second")
-@token_required([1])
+@token_required([0, 1])
 def collaborator_projet(fin_kod):
-    # Read your OWN membership only, and only for the ACTIVE competition — the
+    # Read your OWN memberships only, and only for the ACTIVE competition — the
     # same resolution sign-in uses, so a past season's row cannot resurface as
-    # "the project I work on".
+    # "the project I work on". A lead may be an executor somewhere too, hence
+    # role 0 is allowed in.
     if fin_kod != g.user.get('fin_kod'):
         return {'error': 'You can only read your own project.'}, 403
 
     active_id = Competition.get_active_id()
-    collaborator = Collaborator.query.filter_by(
-        fin_kod=fin_kod, competition_id=active_id
-    ).first()
+    collaborations = Collaborator.query.filter_by(
+        fin_kod=fin_kod, competition_id=active_id, approved=True
+    ).all()
 
-    if not collaborator or not collaborator.approved:
+    if not collaborations:
         return {'error': 'Collaborator not found'}, 404
-    
+
     return {
         'status': 200,
-        'message': "Project code fetched successfully.",
-        'project_code': collaborator.project_code,
+        'message': "Project codes fetched successfully.",
+        # `project_code` is the first one, kept for clients written when a
+        # person could only ever be on a single team.
+        'project_code': collaborations[0].project_code,
+        'project_codes': [c.project_code for c in collaborations],
     }, 200
 
 @project_offer.route("/api/project-owner/<int:project_code>")

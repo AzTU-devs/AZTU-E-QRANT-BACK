@@ -13,7 +13,9 @@ from models.smetaModels.salaryModel import Salary
 from utils.decarator import role_required
 from utils.jwt_required import token_required
 from utils.archive_lock import archive_write_blocked
-from models.collaboratorModel import Collaborator
+from models.collaboratorModel import (
+    Collaborator, collaboration_limit, COLLABORATION_LIMIT_BY_ROLE
+)
 from exceptions.exception import handle_not_found
 from flask import Blueprint, request, render_template, g
 from exceptions.exception import handle_global_exception
@@ -67,6 +69,50 @@ def resolve_managed_project(project_code):
         return None, blocked
 
     return project, None
+
+
+def competition_memberships(fin_kod, competition_id):
+    """Every project this person has JOINED in one competition.
+
+    Ownership is not a membership: a lead's own project lives in `project` and
+    is counted separately, which is what leaves them room for one more.
+    """
+    return Collaborator.query.filter_by(
+        fin_kod=fin_kod, competition_id=competition_id
+    ).all()
+
+
+def membership_capacity(fin_kod, competition_id):
+    """(used, allowed, remaining) collaboration slots for one competition.
+
+    `allowed` follows the person's registered role, so a lead — who already
+    carries a project of their own — gets fewer than a dedicated executor.
+    """
+    account = Auth.query.filter_by(fin_kod=fin_kod).first()
+    allowed = collaboration_limit(account.project_role if account else None)
+    used = len(competition_memberships(fin_kod, competition_id))
+    return used, allowed, max(0, allowed - used)
+
+
+def membership_payload(collaborator, project=None):
+    """One "project I take part in" row, for the dashboards."""
+    project = project or Project.query.filter_by(
+        project_code=collaborator.project_code
+    ).first()
+    lead = User.query.filter_by(fin_kod=project.fin_kod).first() if project else None
+
+    return {
+        'project_code': collaborator.project_code,
+        'project_name': project.project_name if project else None,
+        'role': 'member',
+        'approved': bool(collaborator.approved),
+        'project_approved': project.approved if project else None,
+        'submitted': bool(project.submitted) if project else None,
+        'winner': bool(project.winner) if project else None,
+        'competition_id': collaborator.competition_id,
+        'lead_fin_kod': project.fin_kod if project else None,
+        'lead_name': f"{lead.name or ''} {lead.surname or ''}".strip() if lead else None,
+    }
 
 
 def drop_collaborator(collaborator, project_code):
@@ -254,28 +300,99 @@ def get_project_owner(project_code):
 @limiter.limit("100 per second")
 @token_required([0, 1, 2])
 def my_collaborator_status():
-    """The caller's own membership in the ACTIVE competition.
+    """The caller's own memberships in the ACTIVE competition.
 
     The clients cache `is_collaborator` from sign-in, so a person removed from
     a team mid-session would keep seeing "İştirakçı Ol" disabled until their
-    next login. This lets the UI re-read the truth instead.
+    next login. This lets the UI re-read the truth instead — including how many
+    of their collaboration slots are still free.
     """
     try:
         fin_kod = g.user.get('fin_kod')
         active_id = Competition.get_active_id()
 
-        collaborator = Collaborator.query.filter_by(
-            fin_kod=fin_kod, competition_id=active_id
-        ).first()
+        memberships = competition_memberships(fin_kod, active_id)
+        used, allowed, remaining = membership_capacity(fin_kod, active_id)
 
         return handle_success({
-            'is_collaborator': collaborator is not None,
-            'approved': bool(collaborator.approved) if collaborator else False,
-            'project_code': collaborator.project_code if collaborator else None
+            'is_collaborator': bool(memberships),
+            # Kept for older clients that expect a single project.
+            'approved': bool(memberships[0].approved) if memberships else False,
+            'project_code': memberships[0].project_code if memberships else None,
+            'project_codes': [m.project_code for m in memberships],
+            'used_slots': used,
+            'allowed_slots': allowed,
+            'remaining_slots': remaining,
+            'can_join_more': remaining > 0
         }, 'Collaborator status fetched successfully.')
 
     except Exception as e:
         logger.exception("An error occurred while fetching the collaborator status")
+        return handle_global_exception(str(e))
+
+
+@collaborator_bp.route("/api/memberships", methods=['GET'])
+@collaborator_bp.route("/api/memberships/<string:fin_kod>", methods=['GET'])
+@limiter.limit("100 per second")
+@token_required([0, 1, 2])
+def get_memberships(fin_kod=None):
+    """Everything one person takes part in during the ACTIVE competition —
+    the project they lead plus every project they joined as an executor.
+
+    Backs the "my projects" panel on the dashboard. Without a `fin_kod` it
+    answers about the caller; with one it answers about that person, which
+    only an admin may ask.
+    """
+    try:
+        caller = g.user.get('fin_kod')
+        target = fin_kod or caller
+
+        if target != caller and not caller_is_admin():
+            return {'error': 'You can only read your own memberships.', 'status': 403}, 403
+
+        account = Auth.query.filter_by(fin_kod=target).first()
+        if not account:
+            return {'error': 'User not found.', 'status': 404}, 404
+
+        active_id = Competition.get_active_id()
+        active = Competition.get_active()
+        used, allowed, remaining = membership_capacity(target, active_id)
+
+        led = []
+        for project in Project.query.filter_by(fin_kod=target, competition_id=active_id).all():
+            led.append({
+                'project_code': project.project_code,
+                'project_name': project.project_name,
+                'role': 'lead',
+                'approved': True,
+                'project_approved': project.approved,
+                'submitted': bool(project.submitted),
+                'winner': bool(project.winner),
+                'competition_id': project.competition_id,
+                'lead_fin_kod': project.fin_kod,
+                'lead_name': None,
+            })
+
+        joined = [membership_payload(m) for m in competition_memberships(target, active_id)]
+
+        user = User.query.filter_by(fin_kod=target).first()
+        return handle_success({
+            'fin_kod': target,
+            'name': user.name if user else None,
+            'surname': user.surname if user else None,
+            'project_role': account.project_role,
+            'competition_id': active_id,
+            'competition_code': active.code if active else None,
+            'led_projects': led,
+            'joined_projects': joined,
+            'used_slots': used,
+            'allowed_slots': allowed,
+            'remaining_slots': remaining,
+            'can_join_more': remaining > 0
+        }, 'Memberships fetched successfully.')
+
+    except Exception as e:
+        logger.exception("An error occurred while fetching memberships")
         return handle_global_exception(str(e))
 
 
@@ -285,9 +402,10 @@ def my_collaborator_status():
 def collaborator_candidates(project_code):
     """People an admin may still add to this project.
 
-    A candidate is an approved, unblocked account registered as an executor
-    (project_role == 1) with a completed profile, who is not already on a team
-    in this competition.
+    A candidate is an approved, unblocked participant with a completed profile
+    who still has a free collaboration slot this competition and is not already
+    on THIS team. Leads appear too — they may take part in one project besides
+    the one they run — except on their own project.
     """
     try:
         project, error = resolve_managed_project(project_code)
@@ -296,16 +414,24 @@ def collaborator_candidates(project_code):
 
         search = (request.args.get('search') or '').strip()
 
-        taken = {
+        already_here = {
             c.fin_kod for c in Collaborator.query.filter_by(
-                competition_id=project.competition_id
+                project_code=project.project_code
             ).all()
         }
 
         candidates = []
-        accounts = Auth.query.filter_by(project_role=1, approved=True, blocked=0).all()
+        accounts = Auth.query.filter(
+            Auth.project_role.in_(tuple(COLLABORATION_LIMIT_BY_ROLE)),
+            Auth.approved.is_(True),
+            Auth.blocked == 0
+        ).all()
         for account in accounts:
-            if account.fin_kod in taken:
+            if account.fin_kod in already_here or account.fin_kod == project.fin_kod:
+                continue
+
+            # Someone whose slots are all used cannot take another project on.
+            if membership_capacity(account.fin_kod, project.competition_id)[2] <= 0:
                 continue
 
             user = User.query.filter_by(fin_kod=account.fin_kod).first()
@@ -326,6 +452,10 @@ def collaborator_candidates(project_code):
                 'father_name': user.father_name,
                 'work_place': user.work_place,
                 'duty': user.duty,
+                'project_role': account.project_role,
+                'remaining_slots': membership_capacity(
+                    account.fin_kod, project.competition_id
+                )[2],
                 'image': user.get_user_image()
             })
 
@@ -341,8 +471,14 @@ def collaborator_candidates(project_code):
 
 @collaborator_bp.route('/api/be-collaborator', methods=['POST'])
 @limiter.limit("100 per second")
-@token_required([1, 2])
+@token_required([0, 1, 2])
 def be_collaborator():
+    """Apply to join a project as an executor.
+
+    Open to leads as well as executors: a lead may take part in one project
+    besides the one they run. How many projects each role may join is decided
+    by `collaboration_limit`.
+    """
     try:
         logger.debug("Received request to become collaborator")
         collaborator_details = request.get_json()
@@ -389,15 +525,26 @@ def be_collaborator():
             logger.debug("User profile not completed.")
             return {'error': 'User profile is not completed.', 'status': 403}, 403
 
-        # A person may join only one project PER competition. The global UNIQUE on
-        # fin_kod was relaxed to (fin_kod, competition_id), so check explicitly.
-        # Once a lead or an admin removes them, this frees up again and they may
-        # apply somewhere else.
-        existing = Collaborator.query.filter_by(
-            fin_kod=fin_kod, competition_id=project.competition_id
+        # Nobody joins the same project twice, and nobody runs their own
+        # project as one of its executors.
+        if project.fin_kod == fin_kod:
+            return handle_conflict("You already lead this project.")
+
+        already_here = Collaborator.query.filter_by(
+            fin_kod=fin_kod, project_code=project_code
         ).first()
-        if existing:
-            return handle_conflict("Already a collaborator in this competition.")
+        if already_here:
+            return handle_conflict("Already a collaborator on this project.")
+
+        # Every role gets a fixed number of collaboration slots per competition.
+        # Being taken off a team frees one again, so a removed person can apply
+        # somewhere else straight away.
+        used, allowed, remaining = membership_capacity(fin_kod, project.competition_id)
+        if remaining <= 0:
+            return handle_conflict(
+                f"Already taking part in {used} project(s); the limit for this "
+                f"role is {allowed} per competition."
+            )
 
         new_collaborator_record = Collaborator(
             project_code=project_code,
@@ -440,8 +587,8 @@ def add_collaborator(project_code):
             return {'error': 'User not found.', 'status': 404}, 404
         if not account.approved or account.blocked:
             return {'error': 'This account is not approved or is blocked.', 'status': 403}, 403
-        if account.project_role != 1:
-            return {'error': 'Only users registered as executors can join a team.', 'status': 400}, 400
+        if account.project_role not in COLLABORATION_LIMIT_BY_ROLE:
+            return {'error': 'This account cannot take part in a project team.', 'status': 400}, 400
 
         user = User.query.filter_by(fin_kod=fin_kod).first()
         if not user or not user.profile_completed:
@@ -450,14 +597,19 @@ def add_collaborator(project_code):
         if project.fin_kod == fin_kod:
             return {'error': 'The project lead is already on the team.', 'status': 409}, 409
 
-        existing = Collaborator.query.filter_by(
-            fin_kod=fin_kod, competition_id=project.competition_id
+        already_here = Collaborator.query.filter_by(
+            fin_kod=fin_kod, project_code=project.project_code
         ).first()
-        if existing:
-            if existing.project_code == project.project_code:
-                return {'error': 'This user is already on this team.', 'status': 409}, 409
+        if already_here:
+            return {'error': 'This user is already on this team.', 'status': 409}, 409
+
+        used, allowed, remaining = membership_capacity(fin_kod, project.competition_id)
+        if remaining <= 0:
             return {
-                'error': 'This user already belongs to another project in this competition.',
+                'error': (
+                    f'This user already takes part in {used} project(s); the limit '
+                    f'for their role is {allowed} per competition.'
+                ),
                 'status': 409
             }, 409
 
@@ -630,8 +782,16 @@ def resolve_team_member(fin_kod):
         ).first()
     elif caller_is_admin():
         active_id = Competition.get_active_id()
-        query = Collaborator.query.filter_by(fin_kod=fin_kod)
-        collaborator = query.filter_by(competition_id=active_id).first() or query.first()
+        candidates = (Collaborator.query.filter_by(fin_kod=fin_kod, competition_id=active_id).all()
+                      or Collaborator.query.filter_by(fin_kod=fin_kod).all())
+        # A person can belong to several teams now, so a bare FIN no longer
+        # identifies one row — say so rather than acting on an arbitrary team.
+        if len(candidates) > 1:
+            return None, ({
+                'error': 'This user belongs to several projects; name the project_code.',
+                'status': 409
+            }, 409)
+        collaborator = candidates[0] if candidates else None
     else:
         # A lead may only act on applicants to their OWN project.
         active_id = Competition.get_active_id()
