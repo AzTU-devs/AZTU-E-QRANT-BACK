@@ -9,6 +9,7 @@ from config.limiter import limiter
 from werkzeug.utils import secure_filename
 from flask import Blueprint, request, current_app, send_file, g
 from utils.jwt_required import token_required
+from utils.cascade_delete import delete_user_cascade
 from exceptions.exception import handle_success
 from exceptions.exception import handle_not_found
 from exceptions.exception import handle_missing_field
@@ -78,6 +79,60 @@ def get_profile_image(fin_kod):
     except Exception as e:
         return handle_global_exception(str(e))
     
+@user_bp.route('/api/profile/<string:fin_kod>/image', methods=['POST'])
+@limiter.limit("10 per second")
+@token_required([0, 1, 2])
+def update_profile_image(fin_kod):
+    """Replace a profile photo.
+
+    The photo used to be settable only once, while completing the profile.
+    People may now change it afterwards — their own, or anybody's if an admin.
+    """
+    try:
+        caller = g.user.get('fin_kod')
+        is_admin = g.user.get('role') == 2
+        if fin_kod != caller and not is_admin:
+            return {'error': 'You can only change your own photo.', 'status': 403}, 403
+
+        user = User.query.filter_by(fin_kod=fin_kod).first()
+        if not user:
+            return {'error': 'User not found.', 'status': 404}, 404
+
+        image_file = request.files.get('image')
+        if not image_file or not image_file.filename:
+            return {'error': 'image file is required.', 'status': 400}, 400
+
+        extension = image_file.filename.rsplit('.', 1)[-1].lower() if '.' in image_file.filename else ''
+        allowed = current_app.config['ALLOWED_PROFILE_IMAGE_EXTENSIONS']
+        if extension not in allowed:
+            return {
+                'error': f"Only these image types are allowed: {', '.join(sorted(allowed))}.",
+                'status': 400
+            }, 400
+
+        image_bytes = image_file.read()
+        max_size = current_app.config['MAX_PROFILE_IMAGE_SIZE']
+        if len(image_bytes) > max_size:
+            return {
+                'error': f'The image must be smaller than {max_size // (1024 * 1024)} MB.',
+                'status': 400
+            }, 400
+        if not image_bytes:
+            return {'error': 'The uploaded image is empty.', 'status': 400}, 400
+
+        user.image = image_bytes
+        user.updated_at = datetime.utcnow()
+        db.session.commit()
+
+        logger.info("Profile image updated for %s by %s", fin_kod, caller)
+        return handle_success(user.get_user_image(), 'Profile image updated successfully.')
+
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("Failed to update the profile image for %s", fin_kod)
+        return handle_global_exception(str(e))
+
+
 @user_bp.route('/api/approve/profile', methods=['POST'])
 @limiter.limit("100 per second")
 @token_required([0, 1, 2])
@@ -183,6 +238,50 @@ def get_all_approved_user():
 
         return handle_success(users, "Users fetched successfully")
     except Exception as e:
+        return handle_global_exception(str(e))
+
+
+@user_bp.route('/api/user/<string:fin_kod>', methods=['DELETE'])
+@limiter.limit("10 per second")
+@token_required([2])
+def delete_user(fin_kod):
+    """Admin-only: erase a person and everything of theirs.
+
+    That means the login, the profile, every project they lead (with its team,
+    plan, budget, files and reports) and their seat on anybody else's team.
+    None of it is recoverable, which is why it is behind an admin token and an
+    explicit confirmation in the UI.
+    """
+    try:
+        account = Auth.query.filter_by(fin_kod=fin_kod).first()
+        profile = User.query.filter_by(fin_kod=fin_kod).first()
+
+        if not account and not profile:
+            return {'error': 'User not found.', 'status': 404}, 404
+
+        # An admin removing the last admin would lock everyone out of the
+        # administration screens, so refuse rather than let it happen.
+        if account and account.project_role == 2:
+            if fin_kod == g.user.get('fin_kod'):
+                return {'error': 'You cannot delete your own account.', 'status': 403}, 403
+            remaining_admins = Auth.query.filter(
+                Auth.project_role == 2, Auth.fin_kod != fin_kod
+            ).count()
+            if remaining_admins == 0:
+                return {'error': 'The last administrator cannot be deleted.', 'status': 403}, 403
+
+        removed = delete_user_cascade(fin_kod)
+        db.session.commit()
+
+        logger.info("Admin %s deleted user %s: %s", g.user.get('fin_kod'), fin_kod, removed)
+        return handle_success(
+            {'fin_kod': fin_kod, 'removed': removed},
+            'User and all related records deleted successfully.'
+        )
+
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("Failed to delete user %s", fin_kod)
         return handle_global_exception(str(e))
 
 

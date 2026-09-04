@@ -100,6 +100,13 @@ def ensure_schema():
                 inspector.get_unique_constraints('collaborators')
             ))
 
+    # project_activities.months — an activity may span several months, kept as
+    # a comma-separated list beside the original single `month`.
+    if 'project_activities' in inspector.get_table_names():
+        activity_columns = {col['name'] for col in inspector.get_columns('project_activities')}
+        if 'months' not in activity_columns:
+            statements.append("ALTER TABLE project_activities ADD COLUMN months VARCHAR")
+
     # CV columns on the User table (name is quoted because of the uppercase U).
     if 'User' in inspector.get_table_names():
         user_columns = {col['name'] for col in inspector.get_columns('User')}

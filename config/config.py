@@ -38,6 +38,12 @@ class Config:
     # Hər əlavənin maksimum ölçüsü: 25 MB
     MAX_MESSAGE_FILE_SIZE = 25 * 1024 * 1024
 
+    # ------- Profil şəkli -------
+    # Stored in the database as bytes, so keep it small enough to serve inline
+    # with the rest of the profile.
+    ALLOWED_PROFILE_IMAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'webp'}
+    MAX_PROFILE_IMAGE_SIZE = 5 * 1024 * 1024
+
     # ------- CV (şəxsi məlumat) yükləməsi -------
     CV_FILES_FOLDER = os.path.join(UPLOAD_FOLDER, 'cv_files')
     ALLOWED_CV_EXTENSIONS = {'pdf', 'doc', 'docx'}

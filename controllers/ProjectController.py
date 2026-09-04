@@ -11,6 +11,7 @@ from models.competitionModel import Competition
 from models.smetaModels.rentModel import Rent
 from utils.jwt_required import token_required
 from utils.archive_lock import project_is_archived, ARCHIVE_LOCKED_MESSAGE
+from utils.cascade_delete import delete_project_cascade
 from models.smetaModels.smetaModel import Smeta
 from models.collaboratorModel import Collaborator
 from flask import Blueprint, request, current_app, g
@@ -600,19 +601,22 @@ def delete_project_offer():
     # if project.approved == 1:
     #     return {'error': 'Approved projects cannot be deleted.'}, 403
 
-    # The team goes with the project. A collaborator row that outlives its
-    # project still occupies the person's one (fin_kod, competition_id) slot,
-    # which would silently bar them from joining any other project this season.
-    collaborators = Collaborator.query.filter_by(project_code=project.project_code).all()
-    for collaborator in collaborators:
-        db.session.delete(collaborator)
-
-    db.session.delete(project)
-    db.session.commit()
+    # Everything hanging off the project goes with it — team, activities,
+    # smeta, files, reports. Nothing here is tied by a database foreign key,
+    # so without this the children simply outlive their parent; an orphaned
+    # collaborator row would even keep occupying its owner's competition slot.
+    try:
+        removed = delete_project_cascade(project.project_code)
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception("Failed to delete project %s", project.project_code)
+        return {'error': f'Project could not be deleted: {e}'}, 500
 
     return {
         'message': 'Project successfully deleted.',
-        'removed_collaborators': len(collaborators)
+        'removed': removed,
+        'removed_collaborators': removed.get('collaborators', 0)
     }, 200
 
 @project_offer.route("/api/project-details/<int:project_code>", methods=['GET'])
@@ -1055,33 +1059,9 @@ def download_pdf(project_code):
                 Paragraph(activity.activity_name or "", table_content_style)
             ]
 
-            activity_months = []
-            invalid_months = []
-            if hasattr(activity, "month"):
-                # Handle comma-separated string
-                if isinstance(activity.month, str):
-                    for m_str in activity.month.split(','):
-                        m_str = m_str.strip()
-                        if m_str.isdigit():
-                            m = int(m_str)
-                            if 1 <= m <= 12:
-                                activity_months.append(m)
-                            else:
-                                invalid_months.append(m)
-                        else:
-                            invalid_months.append(m_str)
-                elif isinstance(activity.month, list):
-                    for m in activity.month:
-                        if isinstance(m, int):
-                            if 1 <= m <= 12:
-                                activity_months.append(m)
-                            else:
-                                invalid_months.append(m)
-                elif isinstance(activity.month, int):
-                    if 1 <= activity.month <= 12:
-                        activity_months.append(activity.month)
-                    else:
-                        invalid_months.append(activity.month)
+            # The model normalises "3", 3 and "3,4,5" alike, so every stored
+            # shape ends up as the same list of months here.
+            activity_months = activity.month_list()
 
             # Build month cells (index 2 to 13 for months 1 to 12)
             for m in range(1, 13):
@@ -1095,9 +1075,6 @@ def download_pdf(project_code):
                 activity_table_style.append((
                     "BACKGROUND", (m+1, idx+1), (m+1, idx+1), colors.HexColor("#d3d3d3")
                 ))
-            # Log invalid months (do not highlight)
-            for m in invalid_months:
-                current_app.logger.warning(f"Activity '{activity.activity_name}' has invalid month: {m}")
     else:
         activity_table_data.append([
             Paragraph("Məlumat yoxdur", table_content_style),

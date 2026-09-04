@@ -1,6 +1,6 @@
 from flask import Blueprint, request, jsonify
 from extentions.db import db
-from models.projectActivities import ProjectActivities
+from models.projectActivities import ProjectActivities, parse_months
 from utils.archive_lock import archive_write_blocked
 
 project_activity = Blueprint('project_activity', __name__)
@@ -9,10 +9,15 @@ project_activity = Blueprint('project_activity', __name__)
 def create_activity():
     try:
         data = request.get_json()
-        required_fields = ['activity_name', 'month', 'project_code']
-        for field in required_fields:
+        for field in ['activity_name', 'project_code']:
             if field not in data:
                 return jsonify({"error": f"{field} is required"}), 400
+
+        # An activity may span several months. `months` is the current field;
+        # `month` is still accepted from clients that send a single value.
+        months = parse_months(data.get('months', data.get('month')))
+        if not months:
+            return jsonify({"error": "months is required (1-12)"}), 400
 
         blocked = archive_write_blocked(data['project_code'])
         if blocked:
@@ -20,15 +25,16 @@ def create_activity():
 
         new_activity = ProjectActivities(
             activity_name=data['activity_name'],
-            month=data['month'],
             project_code=data['project_code']
         )
-        
+        new_activity.set_months(months)
+
         db.session.add(new_activity)
         db.session.commit()
-        
+
         return jsonify({
             "message": "Project activity created successfully",
+            "activity": new_activity.serialize(),
             "status_code": 201
         }), 201
 
@@ -43,16 +49,7 @@ def get_activities_by_project_code(project_code):
         if not activities:
             return jsonify({"message": "No activities found for this project code"}), 404
 
-        activities_list = []
-        for act in activities:
-            activities_list.append({
-                "id": act.id,
-                "activity_name": act.activity_name,
-                "month": act.month,
-                "project_code": act.project_code,
-                "created_at": act.created_at,
-                "updated_at": act.updated_at
-            })
+        activities_list = [act.serialize() for act in activities]
 
         return jsonify({
             "message": "Project activities fetched successfully",
@@ -70,7 +67,13 @@ def delete_activity_by_month(project_code, month):
         if blocked:
             return blocked
 
-        activity = ProjectActivities.query.filter_by(project_code=project_code, month=month).first()
+        # An activity may now cover several months, so match on the full list
+        # rather than only on the stored first month.
+        activity = next(
+            (a for a in ProjectActivities.query.filter_by(project_code=project_code).all()
+             if month in a.month_list()),
+            None
+        )
 
         if not activity:
             return jsonify({"message": "No activity found for this project code and month"}), 404
@@ -100,25 +103,20 @@ def update_activity(id):
 
         if 'activity_name' in data:
             activity.activity_name = data['activity_name']
-        if 'month' in data:
-            activity.month = data['month']
         if 'project_code' in data:
             activity.project_code = data['project_code']
 
-        db.session.commit()
+        if 'months' in data or 'month' in data:
+            months = parse_months(data.get('months', data.get('month')))
+            if not months:
+                return jsonify({"error": "months is required (1-12)"}), 400
+            activity.set_months(months)
 
-        updated_activity = {
-            "id": activity.id,
-            "activity_name": activity.activity_name,
-            "month": activity.month,
-            "project_code": activity.project_code,
-            "created_at": activity.created_at,
-            "updated_at": activity.updated_at
-        }
+        db.session.commit()
 
         return jsonify({
             "message": "Project activity updated successfully",
-            "activity": updated_activity,
+            "activity": activity.serialize(),
             "status_code": 200
         }), 200
 
