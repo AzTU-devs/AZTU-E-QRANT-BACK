@@ -10,7 +10,7 @@ class Auth(db.Model):
     user_type = db.Column(db.Integer, nullable=False)
     # 0 = teacher, 1 = phd, 2 = master
     # academic_role = db.Column(db.Integer)
-    # 1 = collaborator, 0 = owner, 2 = super admin
+    # 1 = collaborator, 0 = owner, 2 = super admin, 3 = expert
     project_role = db.Column(db.Integer)
     approved = db.Column(db.Boolean, nullable=False, default=False)
     created_at = db.Column(db.DateTime, nullable=False)
@@ -19,6 +19,9 @@ class Auth(db.Model):
     blocked_at = db.Column(db.DateTime)
     unblocked_at = db.Column(db.DateTime)
     otp_verificated = db.Column(db.Boolean, default=False)
+    # An expert receives a one-time password by e-mail and must replace it
+    # before the account is usable for anything else.
+    must_change_password = db.Column(db.Boolean, nullable=False, default=False)
 
 
     def set_password(self, password):
@@ -36,5 +39,6 @@ class Auth(db.Model):
             'fin_kod' : self.fin_kod,
             'user_type': self.user_type,
             # 'academic_role': self.academic_role,
-            'project_role': self.project_role
+            'project_role': self.project_role,
+            'must_change_password': bool(self.must_change_password)
         }

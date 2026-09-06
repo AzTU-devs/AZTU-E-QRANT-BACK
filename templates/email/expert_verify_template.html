@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ekspert Təyinatı</title>
+    <title>E-poçt Təsdiqi</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -93,39 +93,23 @@
             <h2>Hörmətli {{ expert.name }} {{ expert.surname }},</h2>
             <p>
                 <strong>Azərbaycan Texniki Universiteti</strong>nin daxili qrant müsabiqəsi
-                çərçivəsində aşağıdakı layihəyə <strong>ekspert</strong> təyin edildiniz.
+                elektron sistemində sizin üçün ekspert profili yaradıldı.
             </p>
-
-            <div class="cred">
-                <p><strong>Layihə:</strong> {{ project.project_name or "Adsız layihə" }}</p>
-                <p><strong>Layihə kodu:</strong> {{ project.project_code }}</p>
-                {% if lead_name %}<p><strong>Layihə rəhbəri:</strong> {{ lead_name }}</p>{% endif %}
-            </div>
-
             <p>
-                Layihə ilə tanış olmaq, qeyd yazmaq və <strong>10 ballıq</strong> sistemlə
-                qiymətləndirmək üçün sistemə daxil olun.
-            </p>
-
-            <div class="cred">
-                <p><strong>Sistemə giriş məlumatlarınız:</strong></p>
-                <p>İstifadəçi adı (e-poçt): <span class="value">{{ login_email }}</span></p>
-                <p>Birdəfəlik şifrə: <span class="value">{{ one_time_password }}</span></p>
-            </div>
-
-            <div class="warn">
-                <strong>Vacib:</strong> Giriş səhifəsində istifadəçi adı sahəsinə
-                <strong>FIN kod deyil, yuxarıdakı e-poçt ünvanınızı</strong> yazın.
-                Bu şifrə <strong>birdəfəlikdir</strong> — ilk girişdən sonra sistem
-                sizdən yeni şifrə təyin etməyi tələb edəcək.
-            </div>
-
-            <p>
-                Sualınız yaranarsa, bizimlə əlaqə saxlaya bilərsiniz.
+                Layihələrə təyin oluna bilməyiniz üçün bu e-poçt ünvanının sizə aid olduğunu
+                təsdiqləyin. Təsdiqdən sonra təyinat məktubları və sistemə giriş məlumatları
+                məhz bu ünvana göndəriləcək.
             </p>
             <div style="display: flex; justify-content: center; align-items: center;">
-                <a href="{{ login_url }}" class="btn" style="color: white">Sistemə daxil ol</a>
+                <a href="{{ verification_link }}" class="btn" style="color: white">E-poçtu təsdiqlə</a>
             </div>
+            <p style="font-size: 13px; color: #666; margin-top: 20px;">
+                Düymə işləmirsə, bu linki brauzerə köçürün:<br>
+                <span style="word-break: break-all;">{{ verification_link }}</span>
+            </p>
+            <p style="font-size: 13px; color: #666;">
+                Bu məktubu gözləmirdinizsə, nəzərə almayın.
+            </p>
         </div>
         <div class="footer">
             © 2026 Azerbaijan Technical University. All rights reserved.

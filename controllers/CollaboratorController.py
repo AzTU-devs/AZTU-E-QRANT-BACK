@@ -211,7 +211,7 @@ def get_collaborators():
 
 @collaborator_bp.route("/api/collaborators/<int:project_code>")
 @limiter.limit("100 per second")
-@token_required([0, 1, 2])
+@token_required([0, 1, 2, 3])
 def get_collaborators_by_fin_kod(project_code):
     try:
         logger.debug(f"Fetching collaborators for project code: {project_code}")

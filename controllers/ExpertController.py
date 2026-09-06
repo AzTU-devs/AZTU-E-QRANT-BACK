@@ -1,121 +1,516 @@
+import logging
+from datetime import datetime
+
+from flask import Blueprint, request, render_template, current_app, g
+
 from extentions.db import db
 from config.limiter import limiter
 from utils.email_util import send_email
-from models.expertModel import Expert
-from models.projectModel import Project
 from utils.jwt_required import token_required
-from flask import Blueprint, request, render_template
-from exceptions.exception import handle_missing_field, handle_specific_not_found, handle_success, handle_global_exception, handle_creation
+from utils.email_validation import (
+    validate_expert_email, new_verification_token, new_one_time_password,
+)
+from models.authModel import Auth
+from models.userModel import User
+from models.expertModel import Expert, EXPERT_ROLE
+from models.projectModel import Project
+from models.assessmentModel import Assessment, MAX_SCORE, MIN_SCORE
+from exceptions.exception import (
+    handle_specific_not_found, handle_success, handle_global_exception, handle_creation,
+)
+
+logger = logging.getLogger(__name__)
 
 expert_bp = Blueprint('expert', __name__)
 
+
+# ---------------------------------------------------------------- helpers ----
+
+def frontend_url():
+    """Where the browser-facing app lives, for links we put in e-mails."""
+    return current_app.config.get('FRONTEND_URL', 'http://e-grant.aztu.edu.az').rstrip('/')
+
+
+def caller_email():
+    """An expert's identity IS their e-mail — it is their `Auth.fin_kod`."""
+    return (g.user.get('fin_kod') or '').strip().lower()
+
+
+def expert_project_or_error(project_code):
+    """The project, if the calling expert is the one assigned to it."""
+    try:
+        project_code = int(project_code)
+    except (TypeError, ValueError):
+        return None, ({'error': 'project_code must be a number.', 'status': 400}, 400)
+
+    project = Project.query.filter_by(project_code=project_code).first()
+    if not project:
+        return None, ({'error': 'Project not found.', 'status': 404}, 404)
+
+    # Admins may look at anything; an expert only at what they were given.
+    if g.user.get('role') != 2:
+        assigned = (project.expert or '').strip().lower()
+        if assigned != caller_email():
+            return None, ({'error': 'This project is not assigned to you.', 'status': 403}, 403)
+
+    return project, None
+
+
+def send_verification_email(expert):
+    """Issue a fresh token and mail the confirmation link. Returns True on send."""
+    expert.verification_token = new_verification_token()
+    expert.verification_sent_at = datetime.utcnow()
+
+    link = f"{frontend_url()}/expert-verify/{expert.verification_token}"
+    html = render_template(
+        'email/expert_verify_template.html', expert=expert, verification_link=link
+    )
+    return send_email('E-poçt ünvanının təsdiqi', expert.email, html)
+
+
+def upsert_expert_account(expert):
+    """Give the expert a login carrying a fresh one-time password.
+
+    The account IS an `Auth` row keyed by the e-mail address, so an expert
+    signs in through the same form as everyone else — the identifier field
+    simply holds an address instead of a FIN. Returns the plaintext password,
+    which is only ever shown in the e-mail.
+    """
+    one_time_password = new_one_time_password()
+
+    account = Auth.query.filter_by(fin_kod=expert.email).first()
+    if not account:
+        account = Auth(
+            fin_kod=expert.email,
+            user_type=EXPERT_ROLE,
+            project_role=EXPERT_ROLE,
+            approved=True,
+            created_at=datetime.utcnow(),
+            approved_at=datetime.utcnow(),
+            blocked=0,
+        )
+        db.session.add(account)
+
+    account.set_password(one_time_password)
+    account.must_change_password = True
+    account.approved = True
+    account.blocked = 0
+    account.project_role = EXPERT_ROLE
+    return one_time_password
+
+
+# ------------------------------------------------------------- admin: CRUD ---
 
 @expert_bp.route("/api/create-expert", methods=['POST'])
 @limiter.limit("10 per second")
 @token_required([2])
 def create_expert():
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
 
-        required_fields = [
-            'email', 'name', 'surname',
-            'father_name', 'personal_id_serial_number'
-        ]
+        required_fields = ['email', 'name', 'surname', 'father_name', 'personal_id_serial_number']
+        missing = [f for f in required_fields if not (data.get(f) or '').strip()]
+        if missing:
+            return {'error': f"Bu sahələr tələb olunur: {', '.join(missing)}", 'status': 400}, 400
 
-        for field in required_fields:
-            if field not in data:
-                return handle_missing_field(field)
+        # The address has to work — everything the expert ever receives goes there.
+        email, error = validate_expert_email(data['email'])
+        if error:
+            return {'error': error, 'status': 400}, 400
 
-        new_expert = Expert(
-            email=data['email'],
-            name=data['name'],
-            surname=data['surname'],
-            father_name=data['father_name'],
-            personal_id_serial_number=data['personal_id_serial_number'],
-            work_place=data.get('work_place'),
-            duty=data.get('duty'),
-            scientific_degree=data.get('scientific_degree'),
-            phone_number=data.get('phone_number')
+        if Expert.query.filter_by(email=email).first():
+            return {'error': 'Bu e-poçt ünvanı ilə ekspert artıq mövcuddur.', 'status': 409}, 409
+
+        serial = data['personal_id_serial_number'].strip()
+        if Expert.query.filter_by(personal_id_serial_number=serial).first():
+            return {'error': 'Bu şəxsiyyət vəsiqəsi ilə ekspert artıq mövcuddur.', 'status': 409}, 409
+
+        expert = Expert(
+            email=email,
+            name=data['name'].strip(),
+            surname=data['surname'].strip(),
+            father_name=data['father_name'].strip(),
+            personal_id_serial_number=serial,
+            work_place=(data.get('work_place') or None),
+            duty=(data.get('duty') or None),
+            scientific_degree=(data.get('scientific_degree') or None),
+            phone_number=(data.get('phone_number') or None),
+            email_verified=False,
+            created_at=datetime.utcnow(),
         )
+        db.session.add(expert)
+        db.session.flush()
 
-        db.session.add(new_expert)
+        # Sending is the real proof the address works, so it happens before the
+        # commit and its outcome is reported rather than swallowed.
+        sent = send_verification_email(expert)
         db.session.commit()
 
-        return handle_creation("Expert")
+        payload = expert.serialize()
+        payload['verification_email_sent'] = bool(sent)
+
+        if not sent:
+            return {
+                'status': 201,
+                'data': payload,
+                'message': 'Ekspert yaradıldı, lakin təsdiq e-poçtu göndərilə bilmədi. '
+                           'Ünvanı yoxlayıb yenidən göndərin.',
+                'success_code': 'CREATED_WITHOUT_EMAIL',
+            }, 201
+
+        return handle_success(payload, 'Ekspert yaradıldı. Təsdiq linki e-poçt ünvanına göndərildi.')
 
     except Exception as e:
-        return handle_global_exception(e)
-    
-@expert_bp.route("/api/set-expert", methods=['POST'])
+        db.session.rollback()
+        logger.exception('create_expert failed')
+        return handle_global_exception(str(e))
+
+
+@expert_bp.route("/api/experts/<int:expert_id>/resend-verification", methods=['POST'])
 @limiter.limit("10 per second")
 @token_required([2])
-def set_expert():
+def resend_verification(expert_id):
     try:
-        print("[DEBUG] Received request to set expert.")
-        data = request.get_json()
-        print(f"[DEBUG] Request data: {data}")
+        expert = Expert.query.get(expert_id)
+        if not expert:
+            return {'error': 'Ekspert tapılmadı.', 'status': 404}, 404
+        if expert.email_verified:
+            return {'error': 'Bu ekspertin e-poçtu artıq təsdiqlənib.', 'status': 409}, 409
 
-        required_fields = [
-            'email', 'project_code'
-        ]
-
-        for field in required_fields:
-            if field not in data:
-                return handle_missing_field(field)
-            
-        project = Project.query.filter_by(project_code=str(data['project_code'])).first()
-        print(f"[DEBUG] Project found: {project}")
-
-        if project.submitted == False:
-            return {
-                "status": 409,
-                "message": "Project not submitted."
-            }, 409
-
-        project.expert = data['email']
-
+        sent = send_verification_email(expert)
         db.session.commit()
 
-        subject = "Ekspert Təyinatı"
-        recipient = data['email']
-        html_content = render_template("/email/set_expert_template.html")
-        send_email(subject, recipient, html_content)
+        if not sent:
+            return {'error': 'Təsdiq e-poçtu göndərilə bilmədi.', 'status': 502}, 502
+        return handle_success(expert.serialize(), 'Təsdiq linki yenidən göndərildi.')
 
-        print("[DEBUG] Expert set successfully.")
-        return handle_success(project, "Expert setted successfully.")
-    
     except Exception as e:
-        print(f"[ERROR] set_expert failed: {e}")
-        return handle_global_exception(e)
-    
+        db.session.rollback()
+        logger.exception('resend_verification failed')
+        return handle_global_exception(str(e))
+
+
+@expert_bp.route("/api/expert/verify/<string:token>", methods=['POST', 'GET'])
+@limiter.limit("10 per second")
+def verify_expert_email(token):
+    """Public: the link in the confirmation e-mail lands here.
+
+    No token check beyond the secret itself — whoever holds it demonstrably
+    received the mail, which is the whole point of the exercise.
+    """
+    try:
+        expert = Expert.query.filter_by(verification_token=token).first()
+        if not expert:
+            return {'error': 'Təsdiq linki etibarsızdır və ya artıq istifadə olunub.', 'status': 404}, 404
+
+        if not expert.email_verified:
+            expert.email_verified = True
+            expert.email_verified_at = datetime.utcnow()
+            expert.verification_token = None
+            db.session.commit()
+
+        return handle_success(
+            {'email': expert.email, 'name': expert.full_name(), 'email_verified': True},
+            'E-poçt ünvanı təsdiqləndi.'
+        )
+
+    except Exception as e:
+        db.session.rollback()
+        logger.exception('verify_expert_email failed')
+        return handle_global_exception(str(e))
+
+
 @expert_bp.route("/api/experts", methods=['GET'])
 @limiter.limit("10 per second")
 @token_required([2])
 def get_experts():
     try:
-        print("[DEBUG] Fetching all experts from database...")
-        experts = Expert.query.all()
+        query = Expert.query
+        # The assignment dropdown asks for verified only: an unverified address
+        # cannot receive the one-time password, so assigning would be a dead end.
+        if (request.args.get('verified_only') or '').lower() in ('1', 'true', 'yes'):
+            query = query.filter(Expert.email_verified.is_(True))
 
-        if not experts:
-            return handle_specific_not_found("Expert not found.")
+        experts = query.order_by(Expert.surname.asc(), Expert.name.asc()).all()
+        return handle_success([e.serialize() for e in experts], 'Experts fetched successfully.')
 
-        experts_data = []
-        for expert in experts:
-            experts_data.append({
-                "id": expert.id,
-                "email": expert.email,
-                "name": expert.name,
-                "surname": expert.surname,
-                "father_name": expert.father_name,
-                "personal_id_serial_number": expert.personal_id_serial_number,
-                "work_place": expert.work_place,
-                "duty": expert.duty,
-                "scientific_degree": expert.scientific_degree,
-                "phone_number": expert.phone_number
+    except Exception as e:
+        logger.exception('get_experts failed')
+        return handle_global_exception(str(e))
+
+
+@expert_bp.route("/api/experts/<int:expert_id>", methods=['DELETE'])
+@limiter.limit("10 per second")
+@token_required([2])
+def delete_expert(expert_id):
+    try:
+        expert = Expert.query.get(expert_id)
+        if not expert:
+            return {'error': 'Ekspert tapılmadı.', 'status': 404}, 404
+
+        assigned = Project.query.filter_by(expert=expert.email).count()
+        if assigned:
+            return {
+                'error': f'Bu ekspert {assigned} layihəyə təyin olunub. Əvvəlcə təyinatı ləğv edin.',
+                'status': 409
+            }, 409
+
+        account = Auth.query.filter_by(fin_kod=expert.email).first()
+        if account and account.project_role == EXPERT_ROLE:
+            db.session.delete(account)
+
+        db.session.delete(expert)
+        db.session.commit()
+        return handle_success({'id': expert_id}, 'Ekspert silindi.')
+
+    except Exception as e:
+        db.session.rollback()
+        logger.exception('delete_expert failed')
+        return handle_global_exception(str(e))
+
+
+# -------------------------------------------------------- admin: assignment ---
+
+@expert_bp.route("/api/set-expert", methods=['POST'])
+@limiter.limit("10 per second")
+@token_required([2])
+def set_expert():
+    try:
+        data = request.get_json() or {}
+        for field in ('email', 'project_code'):
+            if not data.get(field):
+                return {'error': f'{field} field is required.', 'status': 400}, 400
+
+        email = (data['email'] or '').strip().lower()
+
+        # `project_code` is an INTEGER column; the old lookup stringified it and
+        # then dereferenced the result without checking, so a miss was a 500.
+        try:
+            project_code = int(data['project_code'])
+        except (TypeError, ValueError):
+            return {'error': 'project_code must be a number.', 'status': 400}, 400
+
+        project = Project.query.filter_by(project_code=project_code).first()
+        if not project:
+            return {'error': 'Layihə tapılmadı.', 'status': 404}, 404
+
+        expert = Expert.query.filter_by(email=email).first()
+        if not expert:
+            return {'error': 'Ekspert tapılmadı.', 'status': 404}, 404
+
+        if not expert.email_verified:
+            return {
+                'error': 'Ekspertin e-poçt ünvanı təsdiqlənməyib. '
+                         'Təyinat məktubu göndərilə bilməz.',
+                'status': 409
+            }, 409
+
+        if not project.submitted:
+            return {'status': 409, 'error': 'Layihə hələ təqdim edilməyib.',
+                    'message': 'Project not submitted.'}, 409
+
+        project.expert = expert.email
+
+        # A fresh one-time password every time the expert is appointed, so an
+        # old mail cannot be replayed to get in.
+        one_time_password = upsert_expert_account(expert)
+
+        lead = User.query.filter_by(fin_kod=project.fin_kod).first()
+        html = render_template(
+            'email/set_expert_template.html',
+            expert=expert,
+            project=project,
+            lead_name=f"{lead.name or ''} {lead.surname or ''}".strip() if lead else None,
+            login_email=expert.email,
+            one_time_password=one_time_password,
+            login_url=f"{frontend_url()}/signin",
+        )
+        sent = send_email('Ekspert Təyinatı', expert.email, html)
+
+        if not sent:
+            # Nothing is committed, so the appointment did not silently happen
+            # while the expert was never told about it.
+            db.session.rollback()
+            return {
+                'error': 'Ekspertə məktub göndərilə bilmədi. Təyinat edilmədi.',
+                'status': 502
+            }, 502
+
+        db.session.commit()
+
+        return handle_success(
+            {
+                'project_code': project.project_code,
+                'expert': expert.serialize(),
+                'credentials_emailed': True,
+            },
+            'Ekspert təyin edildi və məlumatlar e-poçt ilə göndərildi.'
+        )
+
+    except Exception as e:
+        db.session.rollback()
+        logger.exception('set_expert failed')
+        return handle_global_exception(str(e))
+
+
+@expert_bp.route("/api/unset-expert", methods=['POST'])
+@limiter.limit("10 per second")
+@token_required([2])
+def unset_expert():
+    try:
+        data = request.get_json() or {}
+        try:
+            project_code = int(data.get('project_code'))
+        except (TypeError, ValueError):
+            return {'error': 'project_code must be a number.', 'status': 400}, 400
+
+        project = Project.query.filter_by(project_code=project_code).first()
+        if not project:
+            return {'error': 'Layihə tapılmadı.', 'status': 404}, 404
+
+        project.expert = None
+        db.session.commit()
+        return handle_success({'project_code': project_code}, 'Ekspert təyinatı ləğv edildi.')
+
+    except Exception as e:
+        db.session.rollback()
+        logger.exception('unset_expert failed')
+        return handle_global_exception(str(e))
+
+
+# ------------------------------------------------------------ expert: work ---
+
+@expert_bp.route("/api/expert/my-projects", methods=['GET'])
+@limiter.limit("50 per second")
+@token_required([EXPERT_ROLE])
+def expert_projects():
+    """Every project this expert has been appointed to, with their own verdict."""
+    try:
+        email = caller_email()
+        expert = Expert.query.filter_by(email=email).first()
+
+        projects = Project.query.filter_by(expert=email).all()
+        scored = {
+            a.project_code: a
+            for a in Assessment.query.filter_by(expert=email).all()
+        }
+
+        items = []
+        for project in projects:
+            lead = User.query.filter_by(fin_kod=project.fin_kod).first()
+            assessment = scored.get(project.project_code)
+            items.append({
+                'project_code': project.project_code,
+                'project_name': project.project_name,
+                'project_annotation': project.project_annotation,
+                'submitted': bool(project.submitted),
+                'submitted_at': project.submitted_at.isoformat() if project.submitted_at else None,
+                'lead_name': f"{lead.name or ''} {lead.surname or ''}".strip() if lead else None,
+                'assessment': assessment.serialize() if assessment else None,
+                'max_score': MAX_SCORE,
             })
 
-        return handle_success(experts_data, "Experts fetched successfully.")
-    
+        return handle_success({
+            'expert': expert.serialize() if expert else {'email': email},
+            'projects': items,
+        }, 'Assigned projects fetched successfully.')
+
     except Exception as e:
-        print(f"[ERROR] get_experts failed: {e}")
-        return handle_global_exception(e)
+        logger.exception('expert_projects failed')
+        return handle_global_exception(str(e))
+
+
+@expert_bp.route("/api/expert/assessment/<int:project_code>", methods=['GET'])
+@limiter.limit("50 per second")
+@token_required([2, EXPERT_ROLE])
+def get_assessment(project_code):
+    """The verdicts on one project. An expert sees only their own."""
+    try:
+        project, error = expert_project_or_error(project_code)
+        if error:
+            return error
+
+        query = Assessment.query.filter_by(project_code=project.project_code)
+        if g.user.get('role') != 2:
+            query = query.filter_by(expert=caller_email())
+
+        return handle_success(
+            [a.serialize() for a in query.all()], 'Assessment fetched successfully.'
+        )
+
+    except Exception as e:
+        logger.exception('get_assessment failed')
+        return handle_global_exception(str(e))
+
+
+@expert_bp.route("/api/expert/assessment", methods=['POST'])
+@limiter.limit("20 per second")
+@token_required([EXPERT_ROLE])
+def save_assessment():
+    """Record or revise this expert's note and score for a project."""
+    try:
+        data = request.get_json() or {}
+
+        project, error = expert_project_or_error(data.get('project_code'))
+        if error:
+            return error
+
+        raw_score = data.get('assessment', data.get('score'))
+        if raw_score is None or raw_score == '':
+            return {'error': 'Qiymət tələb olunur.', 'status': 400}, 400
+        try:
+            score = int(raw_score)
+        except (TypeError, ValueError):
+            return {'error': 'Qiymət rəqəm olmalıdır.', 'status': 400}, 400
+        if not MIN_SCORE <= score <= MAX_SCORE:
+            return {
+                'error': f'Qiymət {MIN_SCORE} ilə {MAX_SCORE} arasında olmalıdır.',
+                'status': 400
+            }, 400
+
+        email = caller_email()
+        assessment = Assessment.query.filter_by(
+            project_code=project.project_code, expert=email
+        ).first()
+
+        if not assessment:
+            assessment = Assessment(
+                project_code=project.project_code, expert=email,
+                created_at=datetime.utcnow(),
+            )
+            db.session.add(assessment)
+
+        assessment.assessment = score
+        assessment.note = (data.get('note') or '').strip() or None
+        assessment.updated_at = datetime.utcnow()
+        db.session.commit()
+
+        return handle_success(assessment.serialize(), 'Qiymətləndirmə yadda saxlanıldı.')
+
+    except Exception as e:
+        db.session.rollback()
+        logger.exception('save_assessment failed')
+        return handle_global_exception(str(e))
+
+
+@expert_bp.route("/api/project/<int:project_code>/assessments", methods=['GET'])
+@limiter.limit("50 per second")
+@token_required([2])
+def project_assessments(project_code):
+    """Admin view: every expert verdict on a project, with the expert named."""
+    try:
+        rows = Assessment.query.filter_by(project_code=project_code).all()
+        experts = {e.email: e for e in Expert.query.all()}
+
+        items = []
+        for row in rows:
+            expert = experts.get(row.expert)
+            item = row.serialize()
+            item['expert_name'] = expert.full_name() if expert else row.expert
+            items.append(item)
+
+        return handle_success(items, 'Assessments fetched successfully.')
+
+    except Exception as e:
+        logger.exception('project_assessments failed')
+        return handle_global_exception(str(e))

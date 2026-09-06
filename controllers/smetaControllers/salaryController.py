@@ -75,7 +75,7 @@ def add_salary():
 
 @salary_bp.route("/api/salary/smeta/<int:project_code>", methods=['GET'])
 @limiter.limit("50 per second")
-@token_required([0, 1, 2])
+@token_required([0, 1, 2, 3])
 def get_salary_smeta_by_project_code(project_code):
     logger.debug("Fetching salary smeta for project_code: %s", project_code)
     try:

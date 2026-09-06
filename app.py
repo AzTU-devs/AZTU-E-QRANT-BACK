@@ -107,6 +107,36 @@ def ensure_schema():
         if 'months' not in activity_columns:
             statements.append("ALTER TABLE project_activities ADD COLUMN months VARCHAR")
 
+    # Expert e-mail verification, and the forced password change that follows
+    # the one-time password an expert is e-mailed on assignment.
+    if 'experts' in inspector.get_table_names():
+        expert_columns = {col['name'] for col in inspector.get_columns('experts')}
+        for column, ddl in (
+            ('email_verified', "ALTER TABLE experts ADD COLUMN email_verified BOOLEAN DEFAULT FALSE"),
+            ('verification_token', "ALTER TABLE experts ADD COLUMN verification_token VARCHAR(64)"),
+            ('verification_sent_at', "ALTER TABLE experts ADD COLUMN verification_sent_at TIMESTAMP"),
+            ('email_verified_at', "ALTER TABLE experts ADD COLUMN email_verified_at TIMESTAMP"),
+            ('created_at', "ALTER TABLE experts ADD COLUMN created_at TIMESTAMP"),
+        ):
+            if column not in expert_columns:
+                statements.append(ddl)
+
+    if 'auth' in inspector.get_table_names():
+        auth_columns = {col['name'] for col in inspector.get_columns('auth')}
+        if 'must_change_password' not in auth_columns:
+            statements.append(
+                "ALTER TABLE auth ADD COLUMN must_change_password BOOLEAN DEFAULT FALSE"
+            )
+
+    if 'assessment' in inspector.get_table_names():
+        assessment_columns = {col['name'] for col in inspector.get_columns('assessment')}
+        for column, ddl in (
+            ('created_at', "ALTER TABLE assessment ADD COLUMN created_at TIMESTAMP"),
+            ('updated_at', "ALTER TABLE assessment ADD COLUMN updated_at TIMESTAMP"),
+        ):
+            if column not in assessment_columns:
+                statements.append(ddl)
+
     # CV columns on the User table (name is quoted because of the uppercase U).
     if 'User' in inspector.get_table_names():
         user_columns = {col['name'] for col in inspector.get_columns('User')}

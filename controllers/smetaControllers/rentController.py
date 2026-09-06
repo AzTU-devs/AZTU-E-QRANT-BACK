@@ -50,7 +50,7 @@ def create_rent():
 
 @rent_bp.route('/api/get-rent-all-tables/<int:project_code>', methods=['GET'])
 @limiter.limit("50 per second")
-@token_required([0, 1, 2])
+@token_required([0, 1, 2, 3])
 def get_all_rents(project_code):
     rents = Rent.query.filter_by(project_code=project_code).all()
     return jsonify([r.rent() for r in rents]), 200

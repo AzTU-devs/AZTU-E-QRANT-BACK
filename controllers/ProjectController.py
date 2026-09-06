@@ -555,7 +555,7 @@ def get_project_by_fin_kod(fin_kod):
     
 @project_offer.route("/api/project/<int:project_code>", methods=['GET'])
 @limiter.limit("100 per second")
-@token_required([0, 1, 2])
+@token_required([0, 1, 2, 3])
 def project_by_project_code(project_code):
     try:
         project = Project.query.filter_by(project_code=project_code).first()
@@ -656,7 +656,7 @@ def delete_project_offer():
 
 @project_offer.route("/api/project-details/<int:project_code>", methods=['GET'])
 @limiter.limit("100 per second")
-@token_required([0, 1, 2])
+@token_required([0, 1, 2, 3])
 def get_project_details_by_project_code(project_code):
 
     try:
@@ -665,7 +665,15 @@ def get_project_details_by_project_code(project_code):
 
         if not project:
             return handle_specific_not_found("Project not found for the project code.")
-        
+
+        # An expert may only open the project they were appointed to. Everyone
+        # else reaching this route is a lead, an executor or an admin, whose
+        # access is governed by the role list on the decorator.
+        if g.user.get('role') == 3:
+            assigned = (project.expert or '').strip().lower()
+            if assigned != (g.user.get('fin_kod') or '').strip().lower():
+                return {'error': 'This project is not assigned to you.', 'status': 403}, 403
+
         project_owner_fin_kod = project.fin_kod
 
         project_owner = User.query.filter_by(fin_kod=project_owner_fin_kod).first()

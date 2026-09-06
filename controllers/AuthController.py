@@ -2,6 +2,7 @@ import random
 import logging   
 from models.otpModel import Otp
 from models.authModel import Auth
+from models.expertModel import EXPERT_ROLE
 from config.limiter import limiter
 from flask_cors import cross_origin
 from models.userModel import db, User
@@ -15,10 +16,10 @@ from exceptions.exception import handle_conflict
 from exceptions.exception import handle_not_found
 from models.collaboratorModel import  Collaborator
 from exceptions.exception import handle_unauthorized
-from flask import Blueprint, request, render_template
+from flask import Blueprint, request, render_template, g
 from exceptions.exception import handle_missing_field
 from exceptions.exception import handle_signin_success, handle_success
-from utils.jwt_util import encode_auth_token, encode_otp_token, decode_otp_token
+from utils.jwt_util import encode_auth_token, encode_expert_token, encode_otp_token, decode_otp_token
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -132,19 +133,40 @@ def signin():
 
         logger.info("Attempting signin for FIN: %s", fin_kod)
 
+        # An expert's identifier is their e-mail address, which is stored in
+        # the same `fin_kod` column. FIN codes are upper-cased by the client,
+        # so an address is matched case-insensitively.
         auth_data = Auth.query.filter_by(fin_kod=fin_kod).first()
+        if auth_data is None and '@' in (fin_kod or ''):
+            auth_data = Auth.query.filter_by(fin_kod=fin_kod.strip().lower()).first()
 
         if auth_data is None:
-            logger.warning("No auth record found for FIN: %s", fin_kod)
+            logger.warning("No auth record found for identifier: %s", fin_kod)
             return handle_unauthorized(401, "Invalid FIN code or user not found.")
 
         if not auth_data.check_password(password) or not auth_data.approved or auth_data    .blocked:
-            logger.warning("Incorrect password for FIN: %s", fin_kod)
+            logger.warning("Incorrect password for identifier: %s", fin_kod)
             return handle_unauthorized(401, "Incorrect password.")
 
-        if str(auth_data.user_type) != str(user_type):
+        # Experts have no teacher/phd/master category, so the choice made on
+        # the sign-in screen does not apply to them.
+        is_expert = auth_data.project_role == EXPERT_ROLE
+        if not is_expert and str(auth_data.user_type) != str(user_type):
             logger.warning("User type mismatch for FIN: %s. Expected %s, got %s", fin_kod, auth_data.user_type, user_type)
             return handle_unauthorized(401, "User type does not match.")
+
+        # A profile row backs `encode_auth_token`; experts have none, so give
+        # the token issuer what it needs without inventing a User record.
+        if is_expert:
+            token = encode_expert_token(auth_data.id, auth_data.fin_kod)
+            return handle_signin_success({
+                "auth": auth_data.auth_details(),
+                "project_code": None,
+                "collaborator_project_codes": [],
+                "profile_completed": 1,
+                "is_collaborator": False,
+                "must_change_password": bool(auth_data.must_change_password),
+            }, "Signed in successfully.", token)
         
         is_collaborator = False
 
@@ -194,6 +216,50 @@ def signin():
         logger.exception("Unexpected error during signin")
         return {"error": "Internal server error", "message": str(e)}, 500
     
+
+@auth_bp.route('/auth/change-password', methods=['POST'])
+@limiter.limit("10 per second")
+@token_required([0, 1, 2, EXPERT_ROLE])
+def change_password():
+    """Replace your own password.
+
+    This is what clears `must_change_password`, which is set when an expert is
+    e-mailed a one-time password on appointment: the account works, but every
+    screen keeps sending them back here until they choose their own.
+    """
+    try:
+        data = request.get_json() or {}
+        current_password = data.get('current_password')
+        new_password = data.get('new_password')
+
+        if not current_password or not new_password:
+            return {'error': 'Cari və yeni şifrə tələb olunur.', 'status': 400}, 400
+
+        if len(new_password) < 8:
+            return {'error': 'Yeni şifrə ən azı 8 simvol olmalıdır.', 'status': 400}, 400
+
+        account = Auth.query.filter_by(fin_kod=g.user.get('fin_kod')).first()
+        if not account:
+            return {'error': 'İstifadəçi tapılmadı.', 'status': 404}, 404
+
+        if not account.check_password(current_password):
+            return {'error': 'Cari şifrə yanlışdır.', 'status': 403}, 403
+
+        if account.check_password(new_password):
+            return {'error': 'Yeni şifrə köhnə şifrədən fərqli olmalıdır.', 'status': 400}, 400
+
+        account.set_password(new_password)
+        account.must_change_password = False
+        db.session.commit()
+
+        logger.info("Password changed for %s", account.fin_kod)
+        return handle_success({'fin_kod': account.fin_kod}, 'Şifrə uğurla dəyişdirildi.')
+
+    except Exception as e:
+        db.session.rollback()
+        logger.exception("change_password failed")
+        return {"error": "Internal server error", "message": str(e)}, 500
+
 
 @auth_bp.route("/auth/app-wait-users", methods=['GET'])
 @limiter.limit("50 per second")

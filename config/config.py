@@ -38,6 +38,9 @@ class Config:
     # Hər əlavənin maksimum ölçüsü: 25 MB
     MAX_MESSAGE_FILE_SIZE = 25 * 1024 * 1024
 
+    # Where the browser-facing app lives, for links placed inside e-mails.
+    FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://e-grant.aztu.edu.az')
+
     # ------- Profil şəkli -------
     # Stored in the database as bytes, so keep it small enough to serve inline
     # with the rest of the profile.

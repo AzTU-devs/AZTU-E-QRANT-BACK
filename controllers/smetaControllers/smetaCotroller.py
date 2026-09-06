@@ -65,7 +65,7 @@ def update_smeta_field(project_code):
 
 @smeta_bp.route("/api/main-smeta/<int:project_code>", methods=['GET'])
 @limiter.limit("50 per second")
-@token_required([0, 1, 2])
+@token_required([0, 1, 2, 3])
 def get_main_smeta_by_project_code(project_code):
     try:
         project = Project.query.filter_by(project_code=str(project_code)).first()

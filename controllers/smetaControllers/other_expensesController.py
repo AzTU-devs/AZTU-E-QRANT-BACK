@@ -52,7 +52,7 @@ def create_other_exp():
 
 @other_exp.route('/api/get-other_exp-all-tables/<int:project_code>', methods=['GET'])
 @limiter.limit("50 per second")
-@token_required([0, 1, 2])
+@token_required([0, 1, 2, 3])
 def get_all_other_exps(project_code):
     other_exps = other_exp_model.query.filter_by(project_code=project_code).all()
     return jsonify([r.others() for r in other_exps]), 200

@@ -2,6 +2,7 @@ import jwt
 import datetime
 from flask import current_app
 from models.userModel import User
+from models.expertModel import EXPERT_ROLE
 
 
 from flask import current_app
@@ -17,6 +18,30 @@ def encode_auth_token(user_id, fin_kod, profile_completed, role):
         'fin_kod': str(fin_kod),
         'profile_completed': str(profile_completed),
         'role': role,
+        'exp': expiration_time
+    }
+    secret_key = current_app.config.get('SECRET_KEY')
+    if not secret_key or not isinstance(secret_key, str):
+        raise ValueError("SECRET_KEY is missing or not a valid string")
+    token = jwt.encode(payload, secret_key, algorithm='HS256')
+    if isinstance(token, bytes):
+        token = token.decode('utf-8')
+    return token
+
+
+def encode_expert_token(user_id, email):
+    """A token for an expert.
+
+    `encode_auth_token` looks up a `User` profile row, which experts do not
+    have — they live in `experts` + `auth` only — so they get their own issuer
+    with the same payload shape.
+    """
+    expiration_time = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+    payload = {
+        'sub': str(user_id),
+        'fin_kod': str(email),
+        'profile_completed': '1',
+        'role': EXPERT_ROLE,
         'exp': expiration_time
     }
     secret_key = current_app.config.get('SECRET_KEY')
