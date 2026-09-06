@@ -25,6 +25,50 @@ from exceptions.exception import handle_missing_field, handle_specific_not_found
 
 project_offer = Blueprint('project_offer', __name__)
 
+# The fields a proposal carries when it is fully filled in. This drives
+# `Project.approved` and the "these went in blank" note returned on submission.
+# It is deliberately NOT a submission gate: a lead may submit an incomplete
+# proposal, and the only thing that can refuse a submission is the smeta cap.
+REQUIRED_PROJECT_FIELDS = [
+    'project_name', 'project_purpose', 'project_annotation',
+    'project_key_words', 'project_scientific_idea', 'project_structure',
+    'team_characterization', 'project_monitoring', 'project_requirements',
+    'project_deadline', 'collaborator_limit', 'max_smeta_amount', 'priotet'
+]
+
+# Azerbaijani labels, so a rejection names the fields the way the form does.
+PROJECT_FIELD_LABELS = {
+    'project_name': 'Layihənin adı',
+    'project_purpose': 'Layihənin məqsədi',
+    'project_annotation': 'Layihənin annotasiyası',
+    'project_key_words': 'Açar sözlər',
+    'project_scientific_idea': 'Elmi ideya',
+    'project_structure': 'Layihənin strukturu',
+    'team_characterization': 'Komandanın xarakteristikası',
+    'project_monitoring': 'Monitorinq',
+    'project_requirements': 'Layihənin tələbləri',
+    'project_assessment': 'Qiymətləndirmə',
+    'project_deadline': 'Layihənin müddəti',
+    'collaborator_limit': 'İcraçı sayı',
+    'max_smeta_amount': 'Maksimum smeta məbləği',
+    'priotet': 'Layihə prioriteti',
+}
+
+
+def missing_project_fields(project):
+    """Required fields that are still empty, in form order.
+
+    Whitespace-only text counts as empty: a space typed into a textarea is not
+    a filled-in proposal.
+    """
+    missing = []
+    for field in REQUIRED_PROJECT_FIELDS:
+        value = getattr(project, field, None)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(field)
+    return missing
+
+
 def generate_unique_project_code():
     while True:
         code = random.randint(10000000, 99999999)
@@ -128,16 +172,7 @@ def save_project():
         except ValueError:
             return {'error': 'Invalid date format. Use YYYY-MM-DD.'}, 400
 
-    required_fields = [
-        'project_name', 'project_purpose', 'project_annotation',
-        'project_key_words', 'project_scientific_idea', 'project_structure',
-        'team_characterization', 'project_monitoring', 'project_requirements',
-        'project_deadline', 'collaborator_limit', 'max_smeta_amount', 'priotet'
-    ]
-
-    all_fields_filled = all(getattr(project, field) for field in required_fields)
-
-    project.approved = 1 if all_fields_filled else 0
+    project.approved = 0 if missing_project_fields(project) else 1
     current_app.logger.info(f"Project approved={project.approved}")
 
     db.session.commit()
@@ -689,16 +724,31 @@ def submit_project():
     if not project_code:
         return {'error': 'project_code field is required.'}, 400
 
-    project = Project.query.filter_by(project_code=project_code).first()
+    # Submitting is a write on somebody's proposal, so it goes through the same
+    # ownership and archive-lock check as every other write. Without this any
+    # lead could submit another lead's project just by quoting its code.
+    project, error = resolve_writable_project(g.user.get('fin_kod'), project_code)
+    if error:
+        return error
 
     if not project:
         return {'error': 'Project not found for the provided project_code.'}, 404
-    smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
 
-    if not smeta:
-        return {"status": 409, "message": "Smeta not found. Fill the budget first."}, 409
+    # Submission is deliberately permissive: a proposal that has not budgeted
+    # for rent, services or any other category — or has no smeta row at all —
+    # may still be submitted. Those sections are optional, and a project that
+    # simply does not rent anything must not be held back by an empty table.
+    #
+    # The ONLY budget rule enforced here is the cap on the total.
+    #
+    # The smeta is written with an INTEGER project_code in some places and a
+    # stringified one in others; match either, so the cap is never skipped just
+    # because the row was stored under the other shape.
+    smeta = Smeta.query.filter(
+        Smeta.project_code.in_([project.project_code, str(project.project_code)])
+    ).first()
 
-    # Guard against None (unused categories) — otherwise sum() raises TypeError.
+    # `or 0` throughout: an untouched category is zero, not a reason to refuse.
     total_amount = sum([
         smeta.total_fee or 0,
         smeta.total_salary or 0,
@@ -707,14 +757,17 @@ def submit_project():
         smeta.total_services or 0,
         smeta.total_rent or 0,
         smeta.other_expenses or 0,
-    ])
+    ]) if smeta else 0
 
     # Use the project's configured cap (from the competition) instead of a literal.
     max_amount = project.max_smeta_amount or 50000
     if total_amount > max_amount:
         return {
             "status": 409,
-            "message": f"Total amount is over {max_amount}"
+            "error": f"Smeta məbləği {max_amount} AZN limitini aşır.",
+            "message": f"Total amount is over {max_amount}",
+            "total_amount": total_amount,
+            "max_amount": max_amount,
         }, 409
 
     project.submitted = True
@@ -722,7 +775,17 @@ def submit_project():
 
     db.session.commit()
 
-    return {'message': 'Project successfully submitted.'}, 200
+    # Empty fields do not block the submission, but the lead is told which ones
+    # went in blank so it is a choice rather than an accident.
+    incomplete = missing_project_fields(project)
+
+    return {
+        'message': 'Project successfully submitted.',
+        'total_amount': total_amount,
+        'max_amount': max_amount,
+        'incomplete_fields': incomplete,
+        'incomplete_labels': [PROJECT_FIELD_LABELS.get(f, f) for f in incomplete],
+    }, 200
 
 @project_offer.route("/api/col-project/<string:fin_kod>")
 @limiter.limit("100 per second")
