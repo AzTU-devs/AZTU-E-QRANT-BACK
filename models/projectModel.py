@@ -31,6 +31,12 @@ class Project(db.Model):
     submitted_at = db.Column(db.DateTime)
     winner = db.Column(db.Boolean, default=False)
     winner_at = db.Column(db.DateTime)
+    # An admin can send a submitted proposal back for corrections. The note is
+    # what the lead is meant to act on, so it is kept after the resubmission
+    # too — `submitted` is what says whether anything is outstanding.
+    revision_note = db.Column(db.Text)
+    returned_at = db.Column(db.DateTime)
+    returned_by = db.Column(db.String(100))  # fin_kod of the admin
     competition_id = db.Column(db.Integer)  # FK-by-convention -> competitions.id
     # Projects of PREVIOUS competitions (the archive) are read-only by default.
     # An admin flips this flag to hand the project back to its owner for edits.
@@ -63,6 +69,12 @@ class Project(db.Model):
             'submitted_at': self.submitted_at,
             'winner': bool(self.winner),
             'winner_at': self.winner_at,
+            'revision_note': self.revision_note,
+            'returned_at': self.returned_at,
+            'returned_by': self.returned_by,
+            # True while the lead still has corrections to make: sent back and
+            # not handed in again since.
+            'needs_revision': bool(self.returned_at) and not bool(self.submitted),
             'competition_id': self.competition_id,
             'edit_unlocked': bool(self.edit_unlocked),
             'edit_unlocked_at': self.edit_unlocked_at,

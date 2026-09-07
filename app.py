@@ -79,6 +79,14 @@ def ensure_schema():
     if 'edit_unlocked_by' not in existing_columns:
         statements.append("ALTER TABLE project ADD COLUMN edit_unlocked_by VARCHAR(100)")
 
+    # Returning a submitted proposal to its lead for corrections.
+    if 'revision_note' not in existing_columns:
+        statements.append("ALTER TABLE project ADD COLUMN revision_note TEXT")
+    if 'returned_at' not in existing_columns:
+        statements.append("ALTER TABLE project ADD COLUMN returned_at TIMESTAMP")
+    if 'returned_by' not in existing_columns:
+        statements.append("ALTER TABLE project ADD COLUMN returned_by VARCHAR(100)")
+
     # collaborators.competition_id (additive, safe).
     if 'collaborators' in inspector.get_table_names():
         collab_columns = {col['name'] for col in inspector.get_columns('collaborators')}

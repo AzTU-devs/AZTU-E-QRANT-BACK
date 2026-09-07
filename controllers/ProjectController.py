@@ -12,9 +12,11 @@ from models.smetaModels.rentModel import Rent
 from utils.jwt_required import token_required
 from utils.archive_lock import project_is_archived, ARCHIVE_LOCKED_MESSAGE
 from utils.cascade_delete import delete_project_cascade
+from utils.notify import create_notification, notify_admins
+from utils.email_util import send_email
 from models.smetaModels.smetaModel import Smeta
 from models.collaboratorModel import Collaborator
-from flask import Blueprint, request, current_app, g
+from flask import Blueprint, request, current_app, g, render_template
 from models.collaboratorModel import Collaborator
 from models.smetaModels.salaryModel import Salary
 from models.projectActivities import ProjectActivities
@@ -253,6 +255,93 @@ def approve_project():
         return {'message': 'Project approved successfully.'}, 200
 
     except Exception as e:
+        return handle_global_exception(str(e))
+
+
+@project_offer.route("/api/project/return-for-revision", methods=['POST'])
+@limiter.limit("100 per second")
+@token_required([2])
+def return_project_for_revision():
+    """Admin-only: send a submitted proposal back to its lead for corrections.
+
+    The note is mandatory — the whole point is telling the lead what to fix —
+    and it reaches them three ways: on the project page, as a dashboard
+    notification, and by e-mail.
+    """
+    try:
+        data = request.get_json() or {}
+
+        try:
+            project_code = int(data.get('project_code'))
+        except (TypeError, ValueError):
+            return {'error': 'project_code must be a number.', 'status': 400}, 400
+
+        note = (data.get('note') or '').strip()
+        if not note:
+            return {
+                'error': 'Qeyd yazılmalıdır — layihə rəhbəri nəyi düzəltməli olduğunu bilməlidir.',
+                'status': 400
+            }, 400
+
+        project = Project.query.filter_by(project_code=project_code).first()
+        if not project:
+            return {'error': 'Layihə tapılmadı.', 'status': 404}, 404
+
+        if not project.submitted:
+            return {
+                'error': 'Bu layihə təqdim edilməyib, geri qaytarmaq mümkün deyil.',
+                'status': 409
+            }, 409
+
+        project.submitted = False
+        project.revision_note = note
+        project.returned_at = datetime.utcnow()
+        project.returned_by = g.user.get('fin_kod')
+        db.session.commit()
+
+        lead = User.query.filter_by(fin_kod=project.fin_kod).first()
+        project_name = project.project_name or 'Adsız layihə'
+
+        # In-platform notification. Best-effort: the project is already back in
+        # the lead's hands and must not be un-returned by a messaging failure.
+        try:
+            create_notification(
+                recipient_fin_kod=project.fin_kod,
+                title='Layihəniz düzəliş üçün geri qaytarıldı',
+                body=f"'{project_name}' layihəsi düzəliş üçün geri qaytarıldı. Qeyd: {note}",
+                type='general',
+                link='/project-offer',
+            )
+        except Exception:
+            current_app.logger.exception('Could not notify %s about the return', project.fin_kod)
+
+        email_sent = False
+        try:
+            recipient = (lead.work_email or lead.personal_email) if lead else None
+            if recipient:
+                html = render_template(
+                    'email/project_returned_template.html',
+                    project=project,
+                    lead_name=f"{lead.name or ''} {lead.surname or ''}".strip(),
+                    note=note,
+                    login_url=f"{current_app.config.get('FRONTEND_URL', 'http://e-grant.aztu.edu.az').rstrip('/')}/project-offer",
+                )
+                email_sent = send_email('Layihə düzəliş üçün geri qaytarıldı', recipient, html)
+        except Exception:
+            current_app.logger.exception('Could not e-mail %s about the return', project.fin_kod)
+
+        return handle_success({
+            'project_code': project.project_code,
+            'submitted': False,
+            'revision_note': note,
+            'returned_at': project.returned_at.isoformat(),
+            'returned_by': project.returned_by,
+            'email_sent': bool(email_sent),
+        }, 'Layihə düzəliş üçün geri qaytarıldı.')
+
+    except Exception as e:
+        db.session.rollback()
+        current_app.logger.exception('return_project_for_revision failed')
         return handle_global_exception(str(e))
 
 
@@ -781,6 +870,22 @@ def submit_project():
     project.submitted = True
     project.submitted_at = datetime.utcnow()
 
+    was_returned = bool(project.returned_at)
+    if was_returned:
+        # Handing it in again answers the return. `revision_note` is kept as a
+        # record of what was asked for; `returned_at` is what marks it open.
+        project.returned_at = None
+
+        try:
+            notify_admins(
+                title='Düzəldilmiş layihə yenidən təqdim edildi',
+                body=f"'{project.project_name or 'Adsız layihə'}' layihəsi düzəlişdən sonra yenidən təqdim edildi.",
+                type='general',
+                link='/projects/submitted',
+            )
+        except Exception:
+            current_app.logger.exception('Could not notify admins about the resubmission')
+
     db.session.commit()
 
     # Empty fields do not block the submission, but the lead is told which ones
@@ -793,6 +898,7 @@ def submit_project():
         'max_amount': max_amount,
         'incomplete_fields': incomplete,
         'incomplete_labels': [PROJECT_FIELD_LABELS.get(f, f) for f in incomplete],
+        'was_resubmission': was_returned,
     }, 200
 
 @project_offer.route("/api/col-project/<string:fin_kod>")
