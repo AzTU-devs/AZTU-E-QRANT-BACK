@@ -14,7 +14,9 @@ from models.authModel import Auth
 from models.userModel import User
 from models.expertModel import Expert, EXPERT_ROLE
 from models.projectModel import Project
-from models.assessmentModel import Assessment, MAX_SCORE, MIN_SCORE
+from models.assessmentModel import (
+    Assessment, CRITERIA, MAX_TOTAL, parse_criteria, total_of,
+)
 from exceptions.exception import (
     handle_specific_not_found, handle_success, handle_global_exception, handle_creation,
 )
@@ -407,12 +409,16 @@ def expert_projects():
                 'submitted_at': project.submitted_at.isoformat() if project.submitted_at else None,
                 'lead_name': f"{lead.name or ''} {lead.surname or ''}".strip() if lead else None,
                 'assessment': assessment.serialize() if assessment else None,
-                'max_score': MAX_SCORE,
+                'max_total': MAX_TOTAL,
             })
 
         return handle_success({
             'expert': expert.serialize() if expert else {'email': email},
             'projects': items,
+            # The sheet is served with the work so the client renders the rows
+            # from one source of truth instead of duplicating the weights.
+            'criteria': CRITERIA,
+            'max_total': MAX_TOTAL,
         }, 'Assigned projects fetched successfully.')
 
     except Exception as e:
@@ -443,11 +449,24 @@ def get_assessment(project_code):
         return handle_global_exception(str(e))
 
 
+@expert_bp.route("/api/assessment/criteria", methods=['GET'])
+@limiter.limit("50 per second")
+@token_required([2, EXPERT_ROLE])
+def assessment_criteria():
+    """The scoring sheet: the criteria, their weights and the total."""
+    return handle_success({'criteria': CRITERIA, 'max_total': MAX_TOTAL},
+                          'Criteria fetched successfully.')
+
+
 @expert_bp.route("/api/expert/assessment", methods=['POST'])
 @limiter.limit("20 per second")
 @token_required([EXPERT_ROLE])
 def save_assessment():
-    """Record or revise this expert's note and score for a project."""
+    """Record or revise this expert's scoring sheet for a project.
+
+    The total is always recomputed from the per-criterion scores — it is never
+    taken from the client, so it cannot disagree with the breakdown behind it.
+    """
     try:
         data = request.get_json() or {}
 
@@ -455,18 +474,11 @@ def save_assessment():
         if error:
             return error
 
-        raw_score = data.get('assessment', data.get('score'))
-        if raw_score is None or raw_score == '':
-            return {'error': 'Qiymət tələb olunur.', 'status': 400}, 400
-        try:
-            score = int(raw_score)
-        except (TypeError, ValueError):
-            return {'error': 'Qiymət rəqəm olmalıdır.', 'status': 400}, 400
-        if not MIN_SCORE <= score <= MAX_SCORE:
-            return {
-                'error': f'Qiymət {MIN_SCORE} ilə {MAX_SCORE} arasında olmalıdır.',
-                'status': 400
-            }, 400
+        criteria, error_message = parse_criteria(data.get('criteria'))
+        if error_message:
+            return {'error': error_message, 'status': 400}, 400
+
+        score = total_of(criteria)
 
         email = caller_email()
         assessment = Assessment.query.filter_by(
@@ -480,6 +492,7 @@ def save_assessment():
             )
             db.session.add(assessment)
 
+        assessment.criteria = criteria
         assessment.assessment = score
         assessment.note = (data.get('note') or '').strip() or None
         assessment.updated_at = datetime.utcnow()
@@ -507,10 +520,156 @@ def project_assessments(project_code):
             expert = experts.get(row.expert)
             item = row.serialize()
             item['expert_name'] = expert.full_name() if expert else row.expert
+            item['expert_degree'] = expert.scientific_degree if expert else None
             items.append(item)
 
-        return handle_success(items, 'Assessments fetched successfully.')
+        scored = [i['assessment'] for i in items if i['assessment'] is not None]
+        return handle_success({
+            'assessments': items,
+            'criteria': CRITERIA,
+            'max_total': MAX_TOTAL,
+            'expert_count': len(items),
+            # What the admin actually compares projects on when several experts
+            # have scored the same one.
+            'average_total': round(sum(scored) / len(scored), 2) if scored else None,
+        }, 'Assessments fetched successfully.')
 
     except Exception as e:
         logger.exception('project_assessments failed')
+        return handle_global_exception(str(e))
+
+# ------------------------------------------------------ admin: PDF export ---
+
+from io import BytesIO
+from flask import make_response
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfbase import pdfmetrics
+
+PDF_FONT = 'NotoSans'
+
+
+def _register_pdf_font():
+    """Azerbaijani needs a Unicode face; Helvetica would drop the diacritics."""
+    try:
+        pdfmetrics.getFont(PDF_FONT)
+    except Exception:
+        pdfmetrics.registerFont(
+            TTFont(PDF_FONT, './utils/noto_sans/static/NotoSans-Regular.ttf')
+        )
+
+
+@expert_bp.route("/api/project/<int:project_code>/assessments/pdf", methods=['GET'])
+@limiter.limit("20 per second")
+@token_required([2])
+def project_assessments_pdf(project_code):
+    """Admin-only: every expert's scoring sheet for one project, as a PDF."""
+    try:
+        _register_pdf_font()
+
+        project = Project.query.filter_by(project_code=project_code).first()
+        if not project:
+            return {'error': 'Layihə tapılmadı.', 'status': 404}, 404
+
+        rows = Assessment.query.filter_by(project_code=project_code).all()
+        experts = {e.email: e for e in Expert.query.all()}
+        lead = User.query.filter_by(fin_kod=project.fin_kod).first()
+
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle('T', parent=styles['Title'], fontName=PDF_FONT,
+                                     fontSize=15, alignment=1, spaceAfter=10)
+        head_style = ParagraphStyle('H', parent=styles['Heading2'], fontName=PDF_FONT,
+                                    fontSize=12, spaceBefore=12, spaceAfter=6)
+        body_style = ParagraphStyle('B', parent=styles['Normal'], fontName=PDF_FONT,
+                                    fontSize=9, leading=12)
+        cell_style = ParagraphStyle('C', parent=body_style, fontSize=8, leading=10)
+        cell_bold = ParagraphStyle('CB', parent=cell_style, fontSize=8, leading=10)
+
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4,
+                                leftMargin=28, rightMargin=28, topMargin=32, bottomMargin=28)
+        elements = [
+            Paragraph('Ekspert Qiymətləndirmə Hesabatı', title_style),
+            Paragraph(f"<b>Layihə:</b> {project.project_name or 'Adsız layihə'}", body_style),
+            Paragraph(f"<b>Layihə kodu:</b> {project.project_code}", body_style),
+        ]
+        if lead:
+            elements.append(Paragraph(
+                f"<b>Layihə rəhbəri:</b> {(lead.name or '')} {(lead.surname or '')}".strip(),
+                body_style))
+
+        if not rows:
+            elements.append(Spacer(1, 16))
+            elements.append(Paragraph('Bu layihə üzrə qiymətləndirmə yoxdur.', body_style))
+        else:
+            scored = [r.assessment for r in rows if r.assessment is not None]
+            if scored:
+                elements.append(Paragraph(
+                    f"<b>Ekspert sayı:</b> {len(rows)} &nbsp;&nbsp; "
+                    f"<b>Orta bal:</b> {round(sum(scored) / len(scored), 2)} / {MAX_TOTAL}",
+                    body_style))
+
+            for assessment in rows:
+                expert = experts.get(assessment.expert)
+                name = expert.full_name() if expert else assessment.expert
+                elements.append(Paragraph(f'Ekspert: {name}', head_style))
+                elements.append(Paragraph(f'<b>E-poçt:</b> {assessment.expert}', body_style))
+
+                data = [[
+                    Paragraph('№', cell_bold),
+                    Paragraph('Qiymətləndirmə meyarı', cell_bold),
+                    Paragraph('Maks. bal', cell_bold),
+                    Paragraph('Ekspert balı', cell_bold),
+                    Paragraph('Qeyd', cell_bold),
+                ]]
+                for row in assessment.breakdown():
+                    data.append([
+                        Paragraph(str(row['number']), cell_style),
+                        Paragraph(row['title'], cell_style),
+                        Paragraph(str(row['max_score']), cell_style),
+                        Paragraph('' if row['score'] is None else str(row['score']), cell_style),
+                        Paragraph(row['note'] or '', cell_style),
+                    ])
+                data.append([
+                    Paragraph('', cell_bold),
+                    Paragraph('YEKUN BAL', cell_bold),
+                    Paragraph(str(MAX_TOTAL), cell_bold),
+                    Paragraph(f"{assessment.assessment if assessment.assessment is not None else 0}", cell_bold),
+                    Paragraph('', cell_bold),
+                ])
+
+                widths = [doc.width * w for w in (0.05, 0.42, 0.10, 0.10, 0.33)]
+                table = Table(data, colWidths=widths, repeatRows=1)
+                table.setStyle(TableStyle([
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
+                    ('FONTNAME', (0, 0), (-1, -1), PDF_FONT),
+                    ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+                    ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+                    ('ALIGN', (2, 0), (3, -1), 'CENTER'),
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#e0e0e0')),
+                    ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#f0f0f0')),
+                ]))
+                elements.append(Spacer(1, 6))
+                elements.append(table)
+
+                if assessment.note:
+                    elements.append(Spacer(1, 6))
+                    elements.append(Paragraph(f'<b>Ümumi rəy:</b> {assessment.note}', body_style))
+                elements.append(Spacer(1, 10))
+
+        doc.build(elements)
+        buffer.seek(0)
+
+        response = make_response(buffer.read())
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = (
+            f'attachment; filename=assessments_{project_code}.pdf'
+        )
+        return response
+
+    except Exception as e:
+        logger.exception('project_assessments_pdf failed')
         return handle_global_exception(str(e))

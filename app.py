@@ -141,6 +141,8 @@ def ensure_schema():
         for column, ddl in (
             ('created_at', "ALTER TABLE assessment ADD COLUMN created_at TIMESTAMP"),
             ('updated_at', "ALTER TABLE assessment ADD COLUMN updated_at TIMESTAMP"),
+            # The per-criterion breakdown behind the total score.
+            ('criteria', "ALTER TABLE assessment ADD COLUMN criteria JSONB"),
         ):
             if column not in assessment_columns:
                 statements.append(ddl)
