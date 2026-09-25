@@ -1,13 +1,14 @@
 import os
 import uuid
 import logging
+import mimetypes
 from extentions.db import db
 from config.limiter import limiter
 from flask import Blueprint, request, current_app, send_file, g
 from werkzeug.utils import secure_filename
 from models.projectFileModel import ProjectFile
 from utils.jwt_required import token_required
-from utils.archive_lock import archive_write_blocked
+from utils.access import project_read_guard, project_write_guard
 from exceptions.exception import handle_specific_not_found, handle_success, handle_global_exception
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,9 @@ def _allowed(filename):
 @token_required([0, 1, 2])
 def list_project_files(project_code):
     try:
+        _, error = project_read_guard(project_code)
+        if error:
+            return error
         files = (
             ProjectFile.query
             .filter_by(project_code=project_code)
@@ -49,9 +53,11 @@ def list_project_files(project_code):
 def upload_project_files(project_code):
     """Upload one or more files to a project — no limit on the number of files."""
     try:
-        blocked = archive_write_blocked(project_code)
-        if blocked:
-            return blocked
+        # Only the project's lead (or an admin) may add files to it; archived
+        # projects stay closed until an admin unlocks them.
+        _, error = project_write_guard(project_code)
+        if error:
+            return error
 
         files = request.files.getlist('files')
         if not files or all(not f or not f.filename for f in files):
@@ -111,9 +117,9 @@ def delete_project_file(file_id):
         if not record:
             return handle_specific_not_found('File not found.')
 
-        blocked = archive_write_blocked(record.project_code)
-        if blocked:
-            return blocked
+        _, error = project_write_guard(record.project_code)
+        if error:
+            return error
 
         path = os.path.join(current_app.config['PROJECT_FILES_FOLDER'], record.stored_filename)
         if os.path.exists(path):
@@ -138,14 +144,21 @@ def download_project_file(file_id):
         record = ProjectFile.query.get(file_id)
         if not record:
             return handle_specific_not_found('File not found.')
+        _, error = project_read_guard(record.project_code)
+        if error:
+            return error
         path = os.path.join(current_app.config['PROJECT_FILES_FOLDER'], record.stored_filename)
         if not os.path.exists(path):
             return handle_specific_not_found('File not found on server.')
+        # The type is derived from our own stored extension, not the one the
+        # uploader's browser claimed; responses to files are also sandboxed
+        # (see app.py), so an uploaded file can never run script on this origin.
+        guessed = mimetypes.guess_type(record.stored_filename)[0] or 'application/octet-stream'
         return send_file(
             path,
             as_attachment=False,
             download_name=record.original_filename,
-            mimetype=record.content_type or 'application/octet-stream',
+            mimetype=guessed,
         )
     except Exception as e:
         return handle_global_exception(str(e))

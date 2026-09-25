@@ -161,34 +161,212 @@ def ensure_schema():
                 conn.execute(text(statement))
 
 
+# Endpoints that are reachable WITHOUT a bearer token. Each one is either the
+# way a user obtains a token in the first place, or is gated by a different
+# secret (an e-mailed OTP, a signed reset token, an e-mailed verification
+# token). Everything else in the API must carry a valid token — see
+# `default_deny` below, which enforces that centrally.
+PUBLIC_ENDPOINTS = frozenset({
+    'auth.signin',                   # obtains the token
+    'auth.signup',                   # registration (account still needs admin approval)
+    'auth.send_otp',                 # forgotten password: e-mails a one-time code
+    'auth.validate_otp',             # gated by the e-mailed one-time code
+    'auth.reset_password',           # gated by the signed, single-use reset token
+    'expert.verify_expert_email',    # gated by the e-mailed verification token
+    'institution.get_institutions',  # names only; the sign-up form needs it before login
+})
+
+# The public website (Next.js) reads these on ITS server, never in a visitor's
+# browser, so it authenticates with a server-to-server key instead of a user
+# token. The key is never shipped to browsers.
+PUBLIC_SITE_BLUEPRINT = 'public_bp'
+PUBLIC_SITE_KEY_HEADER = 'X-Public-Api-Key'
+
+
+def _requires_auth(view):
+    """True when `token_required` wraps this view (through any other
+    decorators, e.g. the rate limiter)."""
+    seen = 0
+    while view is not None and seen < 10:
+        if getattr(view, '_requires_auth', False):
+            return True
+        view = getattr(view, '__wrapped__', None)
+        seen += 1
+    return False
+
+
+def _register_security(app, swagger_enabled=False):
+    """Default-deny authentication (pentest F4 recommendation: centralised
+    auth), response security headers (F7) and safe, generic error handlers
+    (F6). Registered once per app in `main_app`."""
+    import hmac
+    from flask import jsonify, request
+
+    swagger_prefixes = ('/apidocs', '/flasgger_static', '/apispec')
+
+    @app.before_request
+    def default_deny():
+        # CORS preflight carries no credentials by design; Flask answers it
+        # without running the view.
+        if request.method == 'OPTIONS':
+            return None
+        endpoint = request.endpoint
+        if endpoint is None:
+            return None  # unknown URL: let Flask answer 404
+        if endpoint in PUBLIC_ENDPOINTS:
+            return None
+        if swagger_enabled and endpoint.startswith('flasgger.'):
+            return None
+        if endpoint.startswith(PUBLIC_SITE_BLUEPRINT + '.'):
+            expected = os.getenv('PUBLIC_API_KEY', '')
+            supplied = request.headers.get(PUBLIC_SITE_KEY_HEADER, '')
+            # Fail closed: with no key configured the public API answers nobody.
+            if expected and hmac.compare_digest(supplied.encode(), expected.encode()):
+                return None
+            return jsonify({"error": "Unauthorized", "message": "API key is missing or invalid."}), 401
+        if _requires_auth(app.view_functions.get(endpoint)):
+            return None  # `token_required` authenticates and authorises it
+        # A route nobody marked as public and nobody protected: refuse it, so a
+        # forgotten decorator can never again expose data (the root cause of
+        # pentest findings 1-4).
+        app.logger.error("Refused unprotected endpoint %s (%s %s)", endpoint, request.method, request.path)
+        return jsonify({"error": "Unauthorized", "message": "Authorization token is missing."}), 401
+
+    @app.after_request
+    def set_security_headers(response):
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['X-Frame-Options'] = 'DENY'
+        response.headers['Referrer-Policy'] = 'no-referrer'
+        # HSTS is only honoured over HTTPS; harmless on plain HTTP. Keep the TLS
+        # termination (nginx) in front for it to take effect.
+        response.headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains'
+        # Do not advertise the exact server/framework build (pentest F8). nginx
+        # in front should also set `server_tokens off;`.
+        response.headers['Server'] = 'AzTU'
+        # Authenticated data must not linger in shared/browser caches.
+        if 'Authorization' in request.headers:
+            response.headers['Cache-Control'] = 'no-store'
+        # JSON gets a policy that forbids everything. Every other response is a
+        # file (PDF/DOCX/XLSX exports, CVs, uploads, chat attachments): those are
+        # additionally SANDBOXED, so an uploaded SVG/HTML-ish file opened
+        # straight from the API origin can never run script there. The UI
+        # fetches files as blobs, so this does not affect downloads/previews.
+        if not (swagger_enabled and request.path.startswith(swagger_prefixes)):
+            if (response.mimetype or '').startswith('application/json'):
+                response.headers['Content-Security-Policy'] = (
+                    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+                )
+            else:
+                response.headers['Content-Security-Policy'] = (
+                    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; sandbox"
+                )
+        return response
+
+    # Uncaught exceptions and framework 4xx/5xx return clean JSON with NO Python
+    # detail — the interactive debugger and stack traces never reach a client.
+    @app.errorhandler(Exception)
+    def _handle_uncaught(error):
+        from werkzeug.exceptions import HTTPException
+        if isinstance(error, HTTPException):
+            return jsonify({"error": error.name, "message": error.description}), error.code
+        app.logger.exception("Unhandled exception on %s %s", request.method, request.path)
+        return jsonify({
+            "error": "Internal Server Error",
+            "message": "Daxili server xətası baş verdi."
+        }), 500
+
+    @app.errorhandler(404)
+    def _handle_404(error):
+        return jsonify({"error": "Not Found", "message": "Resource not found."}), 404
+
+    @app.errorhandler(429)
+    def _handle_429(error):
+        return jsonify({
+            "error": "Too Many Requests",
+            "message": "Çox sayda sorğu göndərildi. Zəhmət olmasa bir azdan yenidən cəhd edin."
+        }), 429
+
+
 def main_app():
     load_dotenv()
     app = Flask(__name__)
-    template = {
-        "swagger": "2.0",
-        "info": {
-            "title": "E-Grant API",
-            "description": "API documentation for E-Grant project",
-            "version": "1.0"
-        },
-        "schemes": ["http", "https"]
-    }
 
-    swagger = Swagger(app, template=template)
-    limiter.init_app(app)
+    # Behind nginx every request arrives from 127.0.0.1, so the rate limiter
+    # would see ONE client and throttle all users together (and an attacker
+    # could exhaust e.g. the password-reset bucket for everyone). ProxyFix
+    # restores the real client address from the X-Forwarded-For header that
+    # nginx appends. Trust exactly as many proxy hops as sit in front of the
+    # app (1 = nginx). The app must NOT be reachable directly, or that header
+    # could be forged — bind it to 127.0.0.1.
+    from werkzeug.middleware.proxy_fix import ProxyFix
+    proxy_hops = int(os.getenv('TRUSTED_PROXY_COUNT', '1'))
+    if proxy_hops > 0:
+        app.wsgi_app = ProxyFix(app.wsgi_app, x_for=proxy_hops, x_proto=proxy_hops, x_host=0)
+
+    # The interactive API docs (Flasgger/Swagger UI at /apidocs) confirm the
+    # backend's whole technology stack and, as the spec grows, would map every
+    # route for an attacker. They are OFF unless ENABLE_SWAGGER is explicitly
+    # truthy — so production ships without them (pentest F11).
+    swagger_enabled = os.getenv('ENABLE_SWAGGER', 'false').lower() == 'true'
+    if swagger_enabled:
+        template = {
+            "swagger": "2.0",
+            "info": {
+                "title": "E-Grant API",
+                "description": "API documentation for E-Grant project",
+                "version": "1.0"
+            },
+            "schemes": ["http", "https"]
+        }
+        Swagger(app, template=template)
+
     app.config.from_object(Config)
     app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL')
     app.config['SECRET_KEY'] = os.getenv('SECRET_KEY')
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = os.getenv('SQLALCHEMY_TRACK_MODIFICATIONS', 'False').lower() == 'true'
-    
+    # Never let an unhandled exception render Werkzeug's interactive debugger or
+    # a stack trace to a client; our own error handlers answer instead.
+    app.config['PROPAGATE_EXCEPTIONS'] = False
+    # Hard cap on a request body so oversized uploads are refused (413) before
+    # they are read into memory. Per-file limits are still checked per route.
+    app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_UPLOAD_MB', '100')) * 1024 * 1024
+    # Rate-limit counters. memory:// is per process; with several gunicorn
+    # workers set RATELIMIT_STORAGE_URI=redis://127.0.0.1:6379 so limits are shared.
+    app.config['RATELIMIT_STORAGE_URI'] = os.getenv('RATELIMIT_STORAGE_URI', 'memory://')
+
+    # Tokens are signed with SECRET_KEY: without it nobody can sign in, and a
+    # short one can be brute-forced offline from any captured token.
+    secret = app.config['SECRET_KEY'] or ''
+    if not secret:
+        raise RuntimeError("SECRET_KEY is not set — refusing to start.")
+    if len(secret) < 32:
+        app.logger.warning("SECRET_KEY is shorter than 32 characters; rotate it to a long random value.")
+
+    limiter.init_app(app)
+
+    # ---------------------------------------------------------------- CORS ----
+    # Reflecting any Origin while also allowing credentials defeats the point of
+    # CORS (pentest F5). Restrict to an explicit allow-list. Override in each
+    # environment with CORS_ORIGINS (comma-separated); the defaults cover the
+    # production front-ends plus the usual local dev servers.
+    default_origins = (
+        "https://e-grant.aztu.edu.az,https://admin-e-grant.aztu.edu.az,"
+        "http://e-grant.aztu.edu.az,http://admin-e-grant.aztu.edu.az,"
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:3000,http://127.0.0.1:3000"
+    )
+    allowed_origins = [
+        o.strip() for o in os.getenv('CORS_ORIGINS', default_origins).split(',') if o.strip()
+    ]
     CORS(
     	app,
-    	# origins=["http://e-grant.aztu.edu.az", "http://10.0.26.35"],
-    	origins="*",
+    	origins=allowed_origins,
     	supports_credentials=True,
     	allow_headers=["Content-Type", "Authorization", "Content-Disposition"],
     	methods=["GET", "POST", "PUT", "PATCH", "OPTIONS", "DELETE"]
 	)
+
+    _register_security(app, swagger_enabled=swagger_enabled)
 
     db.init_app(app)
     migrate.init_app(app, db)

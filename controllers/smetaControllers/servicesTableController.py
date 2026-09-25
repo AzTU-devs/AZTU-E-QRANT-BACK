@@ -3,6 +3,7 @@ from decimal import Decimal
 from config.limiter import limiter
 from models.projectModel import Project  
 from utils.jwt_required import token_required
+from utils.access import project_read_guard, project_write_guard
 from flask import Blueprint, request, jsonify
 from models.smetaModels.smetaModel import Smeta
 from models.smetaModels.servicesTableModel import db, ServicesOfPurchase
@@ -15,9 +16,11 @@ services_bp = Blueprint('services_bp', __name__)
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def add_subject():
-    data = request.get_json()
-    logging.debug(f"Received data: {data}")
+    data = request.get_json(silent=True) or {}
     try:
+        wproj, werror = project_write_guard(data.get('project_code'), respect_system_lock=True)
+        if werror:
+            return werror
         matching_project = Project.query.filter_by(
             project_code=data['project_code']
         ).first()
@@ -56,7 +59,7 @@ def add_subject():
     except Exception as e:
         db.session.rollback()
         logging.exception("Exception occurred while adding subject:")
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': 'Internal server error'}), 400
 
 
 @services_bp.route('/api/get-services/<int:project_code>', methods=['GET'])
@@ -64,6 +67,9 @@ def add_subject():
 @token_required([0, 1, 2, 3])
 def get_subjects(project_code):
     try:
+        _rp, _re = project_read_guard(project_code)
+        if _re:
+            return _re
         results = ServicesOfPurchase.query.filter_by(project_code=project_code).all()
 
         response = [{
@@ -79,7 +85,7 @@ def get_subjects(project_code):
         return jsonify(response), 200
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': 'Internal server error'}), 400
 
 
 import logging
@@ -89,8 +95,10 @@ import logging
 @token_required([0, 2])
 def update_service(project_code):
     try:
-        data = request.get_json()
-        logging.debug(f"Received PATCH data for update_service: {data}")
+        data = request.get_json(silent=True) or {}
+        wproj, werror = project_write_guard(project_code, respect_system_lock=True)
+        if werror:
+            return werror
         if not data:
             logging.error("No JSON data provided in request")
             return jsonify({'error': 'Invalid or missing JSON data'}), 400
@@ -128,7 +136,7 @@ def update_service(project_code):
                 logging.debug(f"New total_amount calculated: {service.total_amount}")
             except Exception as e:
                 logging.error(f"Error calculating total_amount: {e}")
-                return jsonify({'error': f"Calculation error: {str(e)}"}), 400
+                return jsonify({'error': 'Calculation error'}), 400
 
         new_total_amount = service.total_amount or 0
 
@@ -151,7 +159,7 @@ def update_service(project_code):
     except Exception as e:
         logging.exception("Exception during update_service:")
         db.session.rollback()
-        return jsonify({'error': f"Server error: {str(e)}"}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 
     
@@ -161,6 +169,9 @@ def update_service(project_code):
 def delete_subject(project_code, id):
 
     try:
+        wproj, werror = project_write_guard(project_code, respect_system_lock=True)
+        if werror:
+            return werror
         service = ServicesOfPurchase.query.filter_by(project_code=project_code, id=id).first()
 
         if not service:
@@ -176,4 +187,4 @@ def delete_subject(project_code, id):
 
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': 'Internal server error'}), 400

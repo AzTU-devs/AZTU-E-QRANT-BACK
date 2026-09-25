@@ -48,11 +48,13 @@ def get_institutions():
 import logging
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
 
 @institution_bp.route('/api/create-institution/<institution_name>', methods=['POST'])
 @limiter.limit("10 per minute")
+@token_required([2])
 def create_institution(institution_name: str):
+    # Admin-only. It was reachable with no token, so anyone could add entries
+    # to the list every registrant chooses from.
     try:
         logger.debug(f"Received institution_name: {institution_name} (type: {type(institution_name)})")
 
@@ -85,18 +87,17 @@ def create_institution(institution_name: str):
 
 
 @institution_bp.route('/api/institution/<institution_code>', methods=['GET'])
-@limiter.limit("10 per minute")
+@limiter.limit("60 per minute")
+@token_required([0, 1, 2, 3])
 def get_institution_by_code(
     institution_code: str
 ):
     try:
         institution = Institution.query.filter(Institution.institution_code == institution_code).first()
-        institution_name = institution.institution_name
-
-        if not institution_code:
+        if not institution:
             return handle_not_found("Institution not found.")
-        
-        return handle_success(institution_name, "Institute fetchd successfully.")
+
+        return handle_success(institution.institution_name, "Institute fetchd successfully.")
     
     except Exception as e:
         logger.error(f"Error occurred: {e}")

@@ -3,6 +3,7 @@ from config.limiter import limiter
 from models.projectModel import Project
 from models.projectModel import Project
 from utils.jwt_required import token_required
+from utils.access import project_read_guard, project_write_guard
 from flask import Blueprint, request, jsonify
 from models.smetaModels.rentModel import Rent
 from models.smetaModels.salaryModel import Salary
@@ -19,8 +20,11 @@ smeta_bp = Blueprint('smeta_bp', __name__)
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def create_smeta():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     try:
+        wproj, werror = project_write_guard(data.get('project_code'), respect_system_lock=True)
+        if werror:
+            return werror
         new_smeta = Smeta(
             project_code=data['project_code'],
             total_salary=data['total_salary'],
@@ -35,13 +39,16 @@ def create_smeta():
         db.session.commit()
         return jsonify({'message': 'Smeta created', 'data': new_smeta.serialize()}), 201
     except Exception as e:
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': 'Internal server error'}), 400
 
 @smeta_bp.route('/api/update-smeta-field/<int:project_code>', methods=['PATCH'])
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def update_smeta_field(project_code):
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
+    wproj, werror = project_write_guard(project_code, respect_system_lock=True)
+    if werror:
+        return werror
     column = data.get('column')
     value = data.get('value')
 
@@ -60,7 +67,7 @@ def update_smeta_field(project_code):
         db.session.commit()
         return jsonify({'message': f"'{column}' updated successfully", 'data': smeta.serialize()}), 200
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 @smeta_bp.route("/api/main-smeta/<int:project_code>", methods=['GET'])
@@ -68,6 +75,9 @@ def update_smeta_field(project_code):
 @token_required([0, 1, 2, 3])
 def get_main_smeta_by_project_code(project_code):
     try:
+        _rp, _re = project_read_guard(project_code)
+        if _re:
+            return _re
         project = Project.query.filter_by(project_code=str(project_code)).first()
         main_smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
 
@@ -111,7 +121,10 @@ def get_main_smeta_by_project_code(project_code):
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def update_smeta(project_code):
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
+    wproj, werror = project_write_guard(project_code, respect_system_lock=True)
+    if werror:
+        return werror
     # `.get()` looks up by primary key (id), not project_code — must filter.
     smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
 
@@ -126,13 +139,16 @@ def update_smeta(project_code):
         db.session.commit()
         return jsonify({'message': 'Smeta updated', 'data': smeta.serialize()}), 200
     except Exception as e:
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': 'Internal server error'}), 400
 
 
 @smeta_bp.route('/api/delete-smeta/<int:project_code>', methods=['DELETE'])
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def delete_smeta(project_code):
+    wproj, werror = project_write_guard(project_code, respect_system_lock=True)
+    if werror:
+        return werror
     smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
     if not smeta:
         return jsonify({'message': 'Smeta not found'}), 404
@@ -142,4 +158,4 @@ def delete_smeta(project_code):
         db.session.commit()
         return jsonify({'message': 'Smeta deleted'}), 200
     except Exception as e:
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': 'Internal server error'}), 400

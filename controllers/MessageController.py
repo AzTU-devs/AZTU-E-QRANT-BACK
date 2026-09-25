@@ -319,11 +319,15 @@ def download_attachment(attachment_id):
         if not os.path.exists(path):
             return handle_specific_not_found('File not found on server.')
 
+        # Type from our stored extension, not the uploader's claim (see app.py
+        # for the sandbox applied to every file response).
+        import mimetypes
+        guessed = mimetypes.guess_type(attachment.stored_filename)[0] or 'application/octet-stream'
         return send_file(
             path,
             as_attachment=False,
             download_name=attachment.original_filename,
-            mimetype=attachment.content_type or 'application/octet-stream',
+            mimetype=guessed,
         )
     except Exception as e:
         return handle_global_exception(str(e))

@@ -57,6 +57,8 @@ def get_priotets():
         return handle_global_exception(e)
 
 @priotet_bp.route('/api/priotet/<int:prioritet_code>')
+@limiter.limit("100 per second")
+@token_required([0, 1, 2])
 def get_priotet_by_code(prioritet_code):
     try:
         priotet = Priotet.query.filter_by(prioritet_code=prioritet_code).first().prioritet_name
@@ -68,7 +70,9 @@ def get_priotet_by_code(prioritet_code):
 
 @priotet_bp.route("/api/del-prioritet/<int:code>", methods=['DELETE'])
 @limiter.limit("10 per second")
+@token_required([2])
 def delete_prioritet(code):
+    # Admin-only: deleting a priority was possible with no token (pentest F4).
     try:
         prioritet = Priotet.query.filter_by(prioritet_code=code).first()
 
@@ -85,7 +89,9 @@ def delete_prioritet(code):
     
 @priotet_bp.route("/api/upd-prioritet", methods=['POST'])
 @limiter.limit("10 per second")
+@token_required([2])
 def upd_prioritet():
+    # Admin-only: updating a priority was possible with no token (pentest F4).
     try:
         data = request.get_json()
 

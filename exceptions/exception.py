@@ -1,16 +1,33 @@
+import logging
+
 from flask import Flask, jsonify
+
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# A single, safe message for every unexpected server error. The concrete
+# exception (stack trace, function/attribute names, Python types) is written to
+# the server log ONLY — never returned to the client, so an attacker cannot map
+# the backend's internals from error responses. See pentest finding 6.
+GENERIC_SERVER_ERROR = "Daxili server xətası baş verdi."
+
 # global for 500 error
 
-@app.errorhandler(Exception)
-def handle_global_exception(e):
-    response = {
+def handle_global_exception(detail=None):
+    """Return a generic 500 to the client and log the real cause server-side.
+
+    Historically this echoed ``str(e)`` straight back to the caller, which
+    disclosed Python stack traces and internal attribute names. It is called
+    both as ``handle_global_exception(str(e))`` and ``handle_global_exception(e)``;
+    either way the detail is logged, not sent.
+    """
+    if detail is not None:
+        logger.error("Unhandled server error: %s", detail)
+    return jsonify({
         "error": "Internal Server Error",
-        "message": str(e)
-    }
-    return jsonify(response), 500
+        "message": GENERIC_SERVER_ERROR
+    }), 500
 
 # 4xx
 

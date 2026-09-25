@@ -78,3 +78,47 @@ class User(db.Model):
         return {
             "image": base64.b64encode(bytes(self.image)).decode('utf-8') if self.image else None
         }
+
+    def user_public_details(self):
+        """A PII-free professional card for people who are NOT the profile owner
+        or an admin — e.g. a lead viewing a teammate, or a teammate viewing the
+        project lead. It deliberately omits identity/contact data (FIN sensitive
+        fields, personal ID number, phone numbers, personal e-mail, address,
+        date/place of birth, citizenship) so the same profile screen can be
+        reused without exposing personal data across accounts (pentest F2)."""
+        return {
+            "name": self.name,
+            "surname": self.surname,
+            "father_name": self.father_name,
+            "fin_kod": self.fin_kod,
+            "image": base64.b64encode(bytes(self.image)).decode('utf-8') if self.image else None,
+            "work_place": self.work_place,
+            "department": self.department,
+            "duty": self.duty,
+            "main_education": self.main_education,
+            "additonal_education": self.additonal_education,
+            "scientific_degree": self.scientific_degree,
+            "scientific_name": self.scientific_name,
+            "scientific_date": self.scientific_date,
+            "scientific_name_date": self.scientific_name_date,
+            "work_location": self.work_location,
+            "profile_completed": self.profile_completed,
+            "institution_code": self.institution_code,
+        }
+
+    def user_list_summary(self, project_role=None):
+        """Lean row for the admin user directory (role management, chat search).
+        Excludes the internal numeric primary key (pentest F9) and the heavy
+        Base64 photo, and keeps only the fields those admin screens actually
+        render plus the two contact addresses the admin inbox needs."""
+        return {
+            "fin_kod": self.fin_kod,
+            "name": self.name,
+            "surname": self.surname,
+            "father_name": self.father_name,
+            "work_place": self.work_place,
+            "duty": self.duty,
+            "personal_email": self.personal_email,
+            "work_email": self.work_email,
+            "project_role": project_role,
+        }

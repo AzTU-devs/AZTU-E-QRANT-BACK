@@ -28,11 +28,14 @@ def _project_year(project):
 
 
 def _lead_public(user):
-    """Minimal, public-safe representation of a person."""
+    """Minimal, public-safe representation of a person.
+
+    No FIN code: it is a sensitive personal identifier, and this data is
+    published on the open internet.
+    """
     if not user:
         return None
     return {
-        'fin_kod': user.fin_kod,
         'name': user.name,
         'surname': user.surname,
         'father_name': user.father_name,

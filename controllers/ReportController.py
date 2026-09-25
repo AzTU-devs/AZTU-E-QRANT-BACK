@@ -6,6 +6,25 @@ from xml.sax.saxutils import escape
 from flask import Blueprint, request, jsonify, send_file, current_app, make_response
 from werkzeug.utils import secure_filename
 from extentions.db import db
+from config.limiter import limiter
+from utils.jwt_required import token_required
+from utils.access import project_read_guard, project_write_guard
+
+# Quarterly reports: the lead (or an admin) writes them; the lead, the team,
+# the assigned expert and admins read them. Writes are NOT archive-locked on
+# purpose — winners of past competitions keep reporting after their season is
+# archived (see utils/archive_lock.py).
+
+
+def _report_write_guard(project_code):
+    return project_write_guard(project_code, check_archive=False)
+
+
+def _file_and_report(file_id):
+    report_file = ReportFile.query.get(file_id)
+    if not report_file:
+        return None, ({"error": "Fayl tapılmadı"}, 404)
+    return report_file, None
 from models.reportModel import QuarterlyReport, ReportFile
 from models.projectModel import Project
 from datetime import datetime
@@ -85,18 +104,26 @@ def _get_or_create_report(project_code, quarter_number, year):
 
 
 @report_bp.route('/api/reports/save', methods=['POST'])
+@limiter.limit("50 per second")
+@token_required([0, 2])
 def save_report():
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
 
         required = ['project_code', 'quarter_number', 'year']
         for field in required:
             if field not in data:
                 return jsonify({"error": f"{field} is required"}), 400
 
+        _, error = _report_write_guard(data['project_code'])
+        if error:
+            return error
+
         project_code   = int(data['project_code'])
         quarter_number = int(data['quarter_number'])
         year           = int(data['year'])
+        if not 1 <= quarter_number <= 4:
+            return jsonify({"error": "quarter_number must be 1-4"}), 400
 
         report = QuarterlyReport.query.filter_by(
             project_code=project_code,
@@ -133,12 +160,18 @@ def save_report():
     except Exception as e:
         db.session.rollback()
         logger.error(f"Error saving report: {str(e)}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @report_bp.route('/api/reports/<int:project_code>/<int:quarter_number>/<int:year>', methods=['GET'])
+@limiter.limit("50 per second")
+@token_required([0, 1, 2, 3])
 def get_report(project_code, quarter_number, year):
     try:
+        _, error = project_read_guard(project_code)
+        if error:
+            return error
+
         report = QuarterlyReport.query.filter_by(
             project_code=project_code,
             quarter_number=quarter_number,
@@ -156,10 +189,12 @@ def get_report(project_code, quarter_number, year):
 
     except Exception as e:
         logger.error(f"Error getting report: {str(e)}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @report_bp.route('/api/reports/files/upload', methods=['POST'])
+@limiter.limit("50 per second")
+@token_required([0, 2])
 def upload_report_files():
     """4-cü rüb hesabatına bir və ya bir neçə fayl (pdf, doc, docx) əlavə edir."""
     try:
@@ -169,6 +204,10 @@ def upload_report_files():
 
         if not all([project_code, quarter_number, year]):
             return jsonify({"error": "project_code, quarter_number və year tələb olunur"}), 400
+
+        _, error = _report_write_guard(project_code)
+        if error:
+            return error
 
         project_code   = int(project_code)
         quarter_number = int(quarter_number)
@@ -235,13 +274,19 @@ def upload_report_files():
     except Exception as e:
         db.session.rollback()
         logger.error(f"Error uploading report files: {str(e)}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @report_bp.route('/api/reports/files/<int:project_code>/<int:quarter_number>/<int:year>', methods=['GET'])
+@limiter.limit("50 per second")
+@token_required([0, 1, 2, 3])
 def list_report_files(project_code, quarter_number, year):
     """Verilmiş hesabata aid faylların siyahısını qaytarır."""
     try:
+        _, error = project_read_guard(project_code)
+        if error:
+            return error
+
         report = QuarterlyReport.query.filter_by(
             project_code=project_code,
             quarter_number=quarter_number,
@@ -258,16 +303,21 @@ def list_report_files(project_code, quarter_number, year):
 
     except Exception as e:
         logger.error(f"Error listing report files: {str(e)}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @report_bp.route('/api/reports/files/download/<int:file_id>', methods=['GET'])
+@limiter.limit("50 per second")
+@token_required([0, 1, 2, 3])
 def download_report_file(file_id):
     """Faylı yükləmək üçün qaytarır."""
     try:
-        report_file = ReportFile.query.get(file_id)
-        if not report_file:
-            return jsonify({"error": "Fayl tapılmadı"}), 404
+        report_file, error = _file_and_report(file_id)
+        if error:
+            return error
+        _, error = project_read_guard(report_file.report.project_code)
+        if error:
+            return error
 
         path = os.path.join(current_app.config['REPORT_FILES_FOLDER'], report_file.stored_filename)
         if not os.path.exists(path):
@@ -282,16 +332,21 @@ def download_report_file(file_id):
 
     except Exception as e:
         logger.error(f"Error downloading report file: {str(e)}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @report_bp.route('/api/reports/files/<int:file_id>', methods=['DELETE'])
+@limiter.limit("50 per second")
+@token_required([0, 2])
 def delete_report_file(file_id):
     """Yüklənmiş faylı silir."""
     try:
-        report_file = ReportFile.query.get(file_id)
-        if not report_file:
-            return jsonify({"error": "Fayl tapılmadı"}), 404
+        report_file, error = _file_and_report(file_id)
+        if error:
+            return error
+        _, error = _report_write_guard(report_file.report.project_code)
+        if error:
+            return error
 
         path = os.path.join(current_app.config['REPORT_FILES_FOLDER'], report_file.stored_filename)
         if os.path.exists(path):
@@ -305,13 +360,18 @@ def delete_report_file(file_id):
     except Exception as e:
         db.session.rollback()
         logger.error(f"Error deleting report file: {str(e)}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @report_bp.route('/api/reports/project/<int:project_code>', methods=['GET'])
+@limiter.limit("50 per second")
+@token_required([0, 1, 2, 3])
 def list_reports(project_code):
     """List every quarterly report saved for a project (used by the admin view)."""
     try:
+        _, error = project_read_guard(project_code)
+        if error:
+            return error
         reports = _fetch_reports(project_code)
         return jsonify({
             "message": "Hesabatlar tapıldı",
@@ -320,10 +380,12 @@ def list_reports(project_code):
         }), 200
     except Exception as e:
         logger.error(f"Error listing reports: {str(e)}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @report_bp.route('/api/reports-pdf/<int:project_code>', methods=['GET'])
+@limiter.limit("50 per second")
+@token_required([0, 1, 2, 3])
 def reports_pdf(project_code):
     """Export a project's quarterly reports as a PDF. Optional ?quarter=&year= filters."""
     from reportlab.lib import colors
@@ -338,7 +400,11 @@ def reports_pdf(project_code):
     try:
         pdfmetrics.registerFont(TTFont(font_name, "./utils/noto_sans/static/NotoSans-Regular.ttf"))
     except Exception as e:
-        return {"status": 500, "message": f"Failed to register local font: {str(e)}"}, 500
+        return {"status": 500, "message": "Report could not be generated."}, 500
+
+    project, error = project_read_guard(project_code)
+    if error:
+        return error
 
     quarter = request.args.get('quarter', type=int)
     year = request.args.get('year', type=int)
@@ -347,7 +413,6 @@ def reports_pdf(project_code):
     if not reports:
         return {"status": 404, "message": "Hesabat tapılmadı"}, 404
 
-    project = Project.query.filter_by(project_code=project_code).first()
     project_name = project.project_name if project else ""
 
     def _rich(value):
@@ -397,11 +462,17 @@ def reports_pdf(project_code):
 
 
 @report_bp.route('/api/reports-docx/<int:project_code>', methods=['GET'])
+@limiter.limit("50 per second")
+@token_required([0, 1, 2, 3])
 def reports_docx(project_code):
     """Export a project's quarterly reports as a DOCX. Optional ?quarter=&year= filters."""
     from docx import Document
     from docx.shared import Pt, RGBColor
     from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+    _, error = project_read_guard(project_code)
+    if error:
+        return error
 
     quarter = request.args.get('quarter', type=int)
     year = request.args.get('year', type=int)

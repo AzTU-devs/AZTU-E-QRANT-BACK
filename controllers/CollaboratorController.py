@@ -10,9 +10,9 @@ from models.projectModel import Project
 from models.competitionModel import Competition
 from models.smetaModels.smetaModel import Smeta
 from models.smetaModels.salaryModel import Salary
-from utils.decarator import role_required
 from utils.jwt_required import token_required
 from utils.archive_lock import archive_write_blocked
+from utils.access import project_read_guard, project_write_guard
 from models.collaboratorModel import (
     Collaborator, collaboration_limit, COLLABORATION_LIMIT_BY_ROLE
 )
@@ -24,7 +24,7 @@ from exceptions.exception import handle_missing_field, handle_creation, handle_s
 
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
@@ -195,8 +195,9 @@ def notify_removed_collaborator(fin_kod, project, template):
 
 @collaborator_bp.route("/api/collaborators", methods=['GET'])
 @limiter.limit("100 per second")
-@token_required([0, 2])
+@token_required([2])
 def get_collaborators():
+    # Every team membership in the system, by FIN: admins only.
     try:
         logger.debug("Fetching all collaborators")
         collaborators = Collaborator.query.filter_by(approved=True).all()
@@ -214,7 +215,11 @@ def get_collaborators():
 @token_required([0, 1, 2, 3])
 def get_collaborators_by_fin_kod(project_code):
     try:
-        logger.debug(f"Fetching collaborators for project code: {project_code}")
+        # The team (names + photos): only people related to the project.
+        _, error = project_read_guard(project_code)
+        if error:
+            return error
+
         collaborator_list = []
         collaborators = Collaborator.query.filter_by(project_code=project_code, approved=True).all()
         logger.debug(f"Number of collaborators fetched: {len(collaborators)}")
@@ -243,7 +248,11 @@ def get_collaborators_by_fin_kod(project_code):
 @token_required([0, 2])
 def get_app_wait_collaborators_by_fin_kod(project_code):
     try:
-        logger.debug(f"Fetching collaborators for project code: {project_code}")
+        # Pending applicants are the lead's (or an admin's) business only.
+        _, error = project_write_guard(project_code, check_archive=False)
+        if error:
+            return error
+
         collaborator_list = []
 
         collaborators = Collaborator.query.filter_by(project_code=project_code, approved=False).all()
@@ -273,13 +282,11 @@ def get_app_wait_collaborators_by_fin_kod(project_code):
 @token_required([0, 1, 2])
 def get_project_owner(project_code):
     try:
-        logger.debug(f"Fetching project owner for project code: {project_code}")
+        project, error = project_read_guard(project_code)
+        if error:
+            return error
 
-        owner_fin_kod = Project.query.filter_by(project_code=project_code).first().fin_kod
-        logger.debug(f"Project owner fin_kod: {owner_fin_kod}")
-
-        user = User.query.filter_by(fin_kod=owner_fin_kod).first()
-        logger.debug(f"Owner found: name={user.name}, surname={user.surname}")
+        user = User.query.filter_by(fin_kod=project.fin_kod).first()
 
         if not user:
             return handle_specific_not_found("Owner not found.")

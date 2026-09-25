@@ -11,6 +11,7 @@ from utils.email_validation import (
     validate_expert_email, new_verification_token, new_one_time_password,
 )
 from models.authModel import Auth
+from utils.identity import email_taken
 from models.userModel import User
 from models.expertModel import Expert, EXPERT_ROLE
 from models.projectModel import Project
@@ -122,6 +123,11 @@ def create_expert():
 
         if Expert.query.filter_by(email=email).first():
             return {'error': 'Bu e-poçt ünvanı ilə ekspert artıq mövcuddur.', 'status': 409}, 409
+
+        # Everyone signs in by e-mail, so an expert's address must not already
+        # sign a staff member in (or the two accounts would collide).
+        if email_taken(email):
+            return {'error': 'Bu e-poçt ünvanı artıq başqa hesabda istifadə olunur.', 'status': 409}, 409
 
         serial = data['personal_id_serial_number'].strip()
         if Expert.query.filter_by(personal_id_serial_number=serial).first():

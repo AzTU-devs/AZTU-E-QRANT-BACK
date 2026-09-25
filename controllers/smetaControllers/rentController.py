@@ -2,6 +2,7 @@ from decimal import Decimal
 from config.limiter import limiter
 from flask import Blueprint, request, jsonify
 from utils.jwt_required import token_required
+from utils.access import project_read_guard, project_write_guard
 from models.smetaModels.smetaModel import Smeta
 from models.smetaModels.rentModel import db, Rent
 
@@ -12,8 +13,11 @@ rent_bp = Blueprint('rent_bp', __name__)
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def create_rent():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     try:
+        wproj, werror = project_write_guard(data.get('project_code'), respect_system_lock=True)
+        if werror:
+            return werror
         new_rent = Rent(
             project_code=data['project_code'],
             rent_area=data['rent_area'],
@@ -46,12 +50,15 @@ def create_rent():
         import logging
         logger = logging.getLogger(__name__)
         logger.error("Error occurred in create_rent: %s", traceback.format_exc())
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 @rent_bp.route('/api/get-rent-all-tables/<int:project_code>', methods=['GET'])
 @limiter.limit("50 per second")
 @token_required([0, 1, 2, 3])
 def get_all_rents(project_code):
+    _rp, _re = project_read_guard(project_code)
+    if _re:
+        return _re
     rents = Rent.query.filter_by(project_code=project_code).all()
     return jsonify([r.rent() for r in rents]), 200
 
@@ -60,7 +67,10 @@ def get_all_rents(project_code):
 @token_required([0, 2])
 def update_rent(project_code):
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
+        wproj, werror = project_write_guard(project_code, respect_system_lock=True)
+        if werror:
+            return werror
         if not data:
             return jsonify({'error': 'Invalid or missing JSON data'}), 400
 
@@ -109,7 +119,7 @@ def update_rent(project_code):
         logger = logging.getLogger(__name__)
         logger.error("Exception in update_rent: %s", traceback.format_exc())
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 @rent_bp.route('/api/delete-rent-table/<int:project_code>/<int:id>', methods=['DELETE'])
@@ -118,6 +128,9 @@ def update_rent(project_code):
 def delete_rent(project_code, id):
 
     try:
+        wproj, werror = project_write_guard(project_code, respect_system_lock=True)
+        if werror:
+            return werror
         rent = Rent.query.filter_by(project_code=project_code, id=id).first()
 
         if not rent:
@@ -132,4 +145,4 @@ def delete_rent(project_code, id):
         return jsonify({'message': 'Rent record deleted'}), 200
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': 'Internal server error'}), 400

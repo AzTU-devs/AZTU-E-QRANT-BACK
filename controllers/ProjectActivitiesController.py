@@ -1,14 +1,24 @@
 from flask import Blueprint, request, jsonify
 from extentions.db import db
+from config.limiter import limiter
 from models.projectActivities import ProjectActivities, parse_months
-from utils.archive_lock import archive_write_blocked
+from utils.jwt_required import token_required
+from utils.access import project_read_guard, project_write_guard
 
 project_activity = Blueprint('project_activity', __name__)
 
+# Every write below goes through `project_write_guard`: only the project's lead
+# (or an admin) may change its activity plan, archived projects stay read-only
+# until an admin unlocks them, and the admin's platform lock is binding here.
+# Before, any signed-in lead could rewrite any project's plan by its code.
+
+
 @project_activity.route('/api/project-activity/create', methods=['POST'])
+@limiter.limit("50 per second")
+@token_required([0, 2])
 def create_activity():
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         for field in ['activity_name', 'project_code']:
             if field not in data:
                 return jsonify({"error": f"{field} is required"}), 400
@@ -19,13 +29,13 @@ def create_activity():
         if not months:
             return jsonify({"error": "months is required (1-12)"}), 400
 
-        blocked = archive_write_blocked(data['project_code'])
-        if blocked:
-            return blocked
+        project, error = project_write_guard(data['project_code'], respect_system_lock=True)
+        if error:
+            return error
 
         new_activity = ProjectActivities(
             activity_name=data['activity_name'],
-            project_code=data['project_code']
+            project_code=project.project_code
         )
         new_activity.set_months(months)
 
@@ -39,11 +49,18 @@ def create_activity():
         }), 201
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        db.session.rollback()
+        return jsonify({"error": "Internal server error"}), 500
 
 @project_activity.route('/api/project-activity/<int:project_code>', methods=['GET'])
+@limiter.limit("100 per second")
+@token_required([0, 1, 2, 3])
 def get_activities_by_project_code(project_code):
     try:
+        _, error = project_read_guard(project_code)
+        if error:
+            return error
+
         activities = ProjectActivities.query.filter_by(project_code=project_code).order_by(ProjectActivities.month.asc()).all()
 
         if not activities:
@@ -58,14 +75,16 @@ def get_activities_by_project_code(project_code):
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 @project_activity.route('/api/project-activity/<int:project_code>/<int:month>', methods=['DELETE'])
+@limiter.limit("50 per second")
+@token_required([0, 2])
 def delete_activity_by_month(project_code, month):
     try:
-        blocked = archive_write_blocked(project_code)
-        if blocked:
-            return blocked
+        _, error = project_write_guard(project_code, respect_system_lock=True)
+        if error:
+            return error
 
         # An activity may now cover several months, so match on the full list
         # rather than only on the stored first month.
@@ -87,24 +106,27 @@ def delete_activity_by_month(project_code, month):
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        db.session.rollback()
+        return jsonify({"error": "Internal server error"}), 500
 
 @project_activity.route('/api/project-activity/update/<int:id>', methods=['PATCH'])
+@limiter.limit("50 per second")
+@token_required([0, 2])
 def update_activity(id):
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         activity = ProjectActivities.query.get(id)
         if not activity:
             return jsonify({"message": "Activity not found"}), 404
 
-        blocked = archive_write_blocked(activity.project_code)
-        if blocked:
-            return blocked
+        _, error = project_write_guard(activity.project_code, respect_system_lock=True)
+        if error:
+            return error
 
         if 'activity_name' in data:
             activity.activity_name = data['activity_name']
-        if 'project_code' in data:
-            activity.project_code = data['project_code']
+        # `project_code` is deliberately NOT writable: it would let an activity
+        # be moved into a project the caller does not own.
 
         if 'months' in data or 'month' in data:
             months = parse_months(data.get('months', data.get('month')))
@@ -121,18 +143,21 @@ def update_activity(id):
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        db.session.rollback()
+        return jsonify({"error": "Internal server error"}), 500
 
 @project_activity.route('/api/project-activity/delete/<int:id>', methods=['DELETE'])
+@limiter.limit("50 per second")
+@token_required([0, 2])
 def delete_activity(id):
     try:
         activity = ProjectActivities.query.get(id)
         if not activity:
             return jsonify({"message": "Activity not found"}), 404
 
-        blocked = archive_write_blocked(activity.project_code)
-        if blocked:
-            return blocked
+        _, error = project_write_guard(activity.project_code, respect_system_lock=True)
+        if error:
+            return error
 
         db.session.delete(activity)
         db.session.commit()
@@ -143,4 +168,5 @@ def delete_activity(id):
         }), 200
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        db.session.rollback()
+        return jsonify({"error": "Internal server error"}), 500

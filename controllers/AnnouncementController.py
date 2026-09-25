@@ -48,7 +48,10 @@ def sanitize_html(raw):
     if not raw:
         return raw
     if bleach is None:
-        return raw
+        # Fail safe: without the sanitizer, store the text escaped rather than
+        # raw HTML that the public site and dashboards would render.
+        from html import escape
+        return escape(raw)
     return bleach.clean(raw, tags=_ALLOWED_TAGS, attributes=_ALLOWED_ATTRIBUTES, strip=True)
 
 

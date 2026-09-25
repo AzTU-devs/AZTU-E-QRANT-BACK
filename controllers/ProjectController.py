@@ -1,3 +1,4 @@
+import os
 import random
 import requests
 from extentions.db import db
@@ -13,6 +14,8 @@ from utils.jwt_required import token_required
 from utils.archive_lock import project_is_archived, ARCHIVE_LOCKED_MESSAGE
 from utils.cascade_delete import delete_project_cascade
 from utils.notify import create_notification, notify_admins
+from utils.access import project_read_guard, is_admin
+from xml.sax.saxutils import escape as _xml_escape
 from utils.email_util import send_email
 from models.smetaModels.smetaModel import Smeta
 from models.collaboratorModel import Collaborator
@@ -116,18 +119,50 @@ def resolve_writable_project(fin_kod, project_code=None):
 
     return project, None
 
+def body_fin_error(fin_kod):
+    """Refuse a request whose body names someone else.
+
+    Several project writes take the lead's `fin_kod` from the JSON body. A lead
+    may only ever act as themselves — otherwise any lead could update or DELETE
+    another lead's project just by naming them. Admins may act for anyone.
+    """
+    if g.user.get('role') != 2 and fin_kod != g.user.get('fin_kod'):
+        return {'error': 'You can only act on your own project.', 'status': 403}, 403
+    return None
+
+
+def redact_project_for_caller(data):
+    """Strip other people's identifiers from a project row for non-admins.
+
+    Every signed-in user can browse this season's proposals, but the lead's FIN
+    code (a sensitive personal identifier), the assigned expert's address and
+    the FINs of the admins who returned/unlocked it are nobody else's business.
+    The caller's OWN FIN is kept so the UI can still recognise "my project".
+    """
+    if is_admin():
+        return data
+    if data.get('fin_kod') != g.user.get('fin_kod'):
+        data['fin_kod'] = None
+    for key in ('expert', 'returned_by', 'edit_unlocked_by'):
+        data[key] = None
+    return data
+
+
 @project_offer.route('/api/save/project', methods=['POST'])
 @limiter.limit("100 per second")
 @token_required([0, 2])
 def save_project():
     current_app.logger.info("POST /api/save/project called")
-    data = request.get_json()
-    current_app.logger.info(f"Received data: {data}")
+    data = request.get_json(silent=True) or {}
     fin_kod = data.get('fin_kod')
 
     if not fin_kod:
         current_app.logger.warning("Missing fin_kod in request")
         return handle_missing_field(404)
+
+    error = body_fin_error(fin_kod)
+    if error:
+        return error
 
     # An explicit project_code targets one specific project — that is how an
     # unlocked ARCHIVED project is edited. Never auto-create in that mode.
@@ -227,6 +262,10 @@ def approve_project():
         # falls back to this user's project in the active competition instead
         # of asking Postgres to compare an INTEGER against ''.
         project_code = project_details.get('project_code') or None
+
+        error = body_fin_error(fin_kod)
+        if error:
+            return error
 
         user = Auth.query.filter_by(fin_kod=fin_kod).first()
 
@@ -538,7 +577,7 @@ def get_projects():
             else:
                 project_data['user'] = None
 
-            project_list.append(project_data)
+            project_list.append(redact_project_for_caller(project_data))
 
         current_app.logger.info(f"Returning {len(project_list)} projects")
         return handle_success(project_list, 'Projects fetched successfully.')
@@ -550,7 +589,7 @@ def get_projects():
 
 @project_offer.route('/api/projects/submitted', methods=['GET'])
 @limiter.limit("100 per second")
-# @token_required([2])
+@token_required([2])
 def get_projects_submitted():
     current_app.logger.info("GET /api/projects called")
     try:
@@ -625,6 +664,10 @@ def get_projects_archive():
 @token_required([0 ,1, 2])
 def get_project_by_fin_kod(fin_kod):
     try:
+        # Your own proposal only (admins may look up anyone's).
+        if g.user.get('role') != 2 and fin_kod != g.user.get('fin_kod'):
+            return {'error': 'You can only read your own project.', 'status': 403}, 403
+
         user = Auth.query.filter_by(fin_kod=fin_kod).first()
 
         if not user:
@@ -647,10 +690,9 @@ def get_project_by_fin_kod(fin_kod):
 @token_required([0, 1, 2, 3])
 def project_by_project_code(project_code):
     try:
-        project = Project.query.filter_by(project_code=project_code).first()
-
-        if not project:
-            return handle_specific_not_found("Project not found.")
+        project, error = project_read_guard(project_code)
+        if error:
+            return error
         
         priotet_obj = Priotet.query.filter_by(prioritet_code=project.priotet).first()
         priotet_name = priotet_obj.prioritet_name if priotet_obj else None
@@ -667,11 +709,15 @@ def project_by_project_code(project_code):
 @limiter.limit("100 per second")
 @token_required([0, 2])
 def update_project_offer():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
 
     fin_kod = data.get('fin_kod')
     if not fin_kod:
         return {'error': 'fin_kod field is required to update a project.'}, 400
+
+    error = body_fin_error(fin_kod)
+    if error:
+        return error
 
     # With a project_code an unlocked ARCHIVED project may be targeted too.
     project, error = resolve_writable_project(fin_kod, data.get('project_code'))
@@ -707,11 +753,15 @@ def update_project_offer():
 @limiter.limit("100 per second")
 @token_required([0, 2])
 def delete_project_offer():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     fin_kod = data.get('fin_kod')
 
     if not fin_kod:
         return {'error': 'fin_kod parameter is required.'}, 400
+
+    error = body_fin_error(fin_kod)
+    if error:
+        return error
 
     # With a project_code an unlocked ARCHIVED project may be deleted too.
     project, error = resolve_writable_project(fin_kod, data.get('project_code'))
@@ -750,18 +800,10 @@ def get_project_details_by_project_code(project_code):
 
     try:
         
-        project = Project.query.filter_by(project_code=project_code).first()
-
-        if not project:
-            return handle_specific_not_found("Project not found for the project code.")
-
-        # An expert may only open the project they were appointed to. Everyone
-        # else reaching this route is a lead, an executor or an admin, whose
-        # access is governed by the role list on the decorator.
-        if g.user.get('role') == 3:
-            assigned = (project.expert or '').strip().lower()
-            if assigned != (g.user.get('fin_kod') or '').strip().lower():
-                return {'error': 'This project is not assigned to you.', 'status': 403}, 403
+        # Admins, the lead, the team and the assigned expert only.
+        project, error = project_read_guard(project_code)
+        if error:
+            return error
 
         project_owner_fin_kod = project.fin_kod
 
@@ -931,14 +973,11 @@ def collaborator_projet(fin_kod):
 
 @project_offer.route("/api/project-owner/<int:project_code>")
 @limiter.limit("100 per second")
+@token_required([0, 1, 2, 3])
 def get_project_owner(project_code):
-    project = Project.query.filter_by(project_code=project_code).first()
-    
-    if not project:
-        return {
-            "status": 404,
-            "message": "Project not found."
-        }, 404
+    project, error = project_read_guard(project_code)
+    if error:
+        return error
 
     owner_fin_kod = project.fin_kod
     owner = User.query.filter_by(fin_kod=owner_fin_kod).first()
@@ -978,7 +1017,7 @@ from reportlab.pdfbase import pdfmetrics
 
 @project_offer.route("/api/project-pdf/<int:project_code>", methods=["GET"])
 @limiter.limit("100 per second")
-# @token_required([0, 1, 2])
+@token_required([0, 1, 2, 3])
 def download_pdf(project_code):
     # Register the local Noto Sans font (supports Azerbaijani letters)
     font_name = "NotoSans"
@@ -989,16 +1028,15 @@ def download_pdf(project_code):
     except Exception as e:
         return {
             "status": 500,
-            "message": f"Failed to register local font: {str(e)}"
+            "message": "Report could not be generated."
         }, 500
 
-    project = Project.query.filter_by(project_code=project_code).first()
-    if not project:
-        return {
-            "status": 404,
-            "message": "Project not found."
-        }, 404
-    
+    # The dossier contains the whole proposal, budget and the team's FIN codes:
+    # admins, the lead, the team and the assigned expert only.
+    project, error = project_read_guard(project_code)
+    if error:
+        return error
+
     # smeta logic to get total and each smeta values
     main_smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
     if not main_smeta:
@@ -1085,11 +1123,25 @@ def download_pdf(project_code):
 
     elements = []
 
-    response = requests.get("https://imgs.search.brave.com/vbEBGTiOqsEBji5vMQfxvvJJtCHIrwqwPFMgdQ6D22M/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly9pbWFn/ZXMuc2Vla2xvZ28u/Y29tL2xvZ28tcG5n/LzMxLzEvYXplcmJh/aWphbi1nZXJiLWxv/Z28tcG5nX3NlZWts/b2dvLTMxODE0MC5w/bmc")
-    image_file = BytesIO(response.content)
-    img = RLImage(image_file, width=2*inch, height=2*inch)
-    elements.append(img)
-    elements.append(Spacer(1, 12))
+    # The emblem is read from a local copy when one is installed
+    # (utils/assets/emblem.png); otherwise it is fetched with a short timeout,
+    # and the PDF is still produced without it if that fails — an external
+    # host must never be able to hang or break contract generation.
+    emblem = None
+    local_emblem = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'utils', 'assets', 'emblem.png')
+    try:
+        if os.path.isfile(local_emblem):
+            with open(local_emblem, 'rb') as fh:
+                emblem = BytesIO(fh.read())
+        else:
+            response = requests.get("https://imgs.search.brave.com/vbEBGTiOqsEBji5vMQfxvvJJtCHIrwqwPFMgdQ6D22M/rs:fit:860:0:0:0/g:ce/aHR0cHM6Ly9pbWFn/ZXMuc2Vla2xvZ28u/Y29tL2xvZ28tcG5n/LzMxLzEvYXplcmJh/aWphbi1nZXJiLWxv/Z28tcG5nX3NlZWts/b2dvLTMxODE0MC5w/bmc", timeout=5)
+            if response.ok and response.headers.get('Content-Type', '').startswith('image/'):
+                emblem = BytesIO(response.content)
+    except Exception:
+        current_app.logger.warning("PDF emblem unavailable; generating the PDF without it")
+    if emblem is not None:
+        elements.append(RLImage(emblem, width=2*inch, height=2*inch))
+        elements.append(Spacer(1, 12))
 
     text_under_image = "AZƏRBAYCAN TEXNİKİ UNİVERSİTETİ (AzTU) daxili qrant müsabiqəsi"
     elements.append(Paragraph(text_under_image, heading1))
@@ -1155,7 +1207,9 @@ def download_pdf(project_code):
     ]
 
     for field_name, value in project_fields:
-        text_content = value or "—"
+        # Proposal text is user input and reportlab treats it as markup: escape
+        # it, or a stray "<" breaks the PDF and tags could inject content.
+        text_content = _xml_escape(value) if value else "—"
         # If the text is very long, handle it as paragraphs instead of a table
         if len(text_content) > 1000:
             current_app.logger.warning(f"Long content detected in '{field_name}', using paragraph layout.")
@@ -1721,11 +1775,14 @@ from flask import send_file
 import pandas as pd
 
 @project_offer.route("/api/project-excel/<int:project_code>", methods=["GET"])
+@limiter.limit("100 per second")
+@token_required([0, 1, 2, 3])
 def download_excel(project_code):
-    # Fetch project and smetas
-    project = Project.query.filter_by(project_code=project_code).first()
-    if not project:
-        return {"status": 404, "message": "Project not found."}, 404
+    # Budget lines and salaries by FIN: admins, the lead, the team and the
+    # assigned expert only.
+    project, error = project_read_guard(project_code)
+    if error:
+        return error
 
     subject_smeta = SubjectOfPurchase.query.filter_by(project_code=project_code).all()
     service_smeta = ServicesOfPurchase.query.filter_by(project_code=project_code).all()

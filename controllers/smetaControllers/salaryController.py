@@ -3,6 +3,7 @@ from models.userModel import User
 from config.limiter import limiter
 from models.projectModel import Project
 from utils.jwt_required import token_required
+from utils.access import project_read_guard, project_write_guard
 from flask import Blueprint, request, jsonify
 from models.smetaModels.smetaModel import Smeta
 from models.collaboratorModel import Collaborator
@@ -19,10 +20,12 @@ salary_bp = Blueprint('salary_bp', __name__)
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def add_salary():
-    data = request.get_json()
-    logger.debug("Received request data: %s", data)
-
+    data = request.get_json(silent=True) or {}
     try:
+        wproj, werror = project_write_guard(data.get('project_code'), respect_system_lock=True)
+        if werror:
+            return werror
+
         salary_per_month = data.get('salary_per_month')
         months = data.get('months')
 
@@ -70,15 +73,18 @@ def add_salary():
     
     except Exception as e:
         logger.exception("Error occurred while creating salary record")
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': 'Internal server error'}), 400
 
 
 @salary_bp.route("/api/salary/smeta/<int:project_code>", methods=['GET'])
 @limiter.limit("50 per second")
 @token_required([0, 1, 2, 3])
 def get_salary_smeta_by_project_code(project_code):
-    logger.debug("Fetching salary smeta for project_code: %s", project_code)
     try:
+        _rp, _re = project_read_guard(project_code)
+        if _re:
+            return _re
+
         # Get the project
         project = Project.query.filter_by(project_code=project_code).first()
         if not project:
@@ -123,7 +129,7 @@ def get_salary_smeta_by_project_code(project_code):
 
 @salary_bp.route('/api/all-salaries-table', methods=['GET'])
 @limiter.limit("50 per second")
-@token_required([0, 1, 2])
+@token_required([2])
 def get_all_salaries():
     salaries = Salary.query.all()
     return jsonify([s.salarytable() for s in salaries]), 200
@@ -134,7 +140,10 @@ def get_all_salaries():
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def update_salary(project_code):
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
+    wproj, werror = project_write_guard(project_code, respect_system_lock=True)
+    if werror:
+        return werror
     fin_kod = data.get('fin_kod')
     salary_per_month = data.get('salary_per_month')
     months = data.get('months')
@@ -184,12 +193,15 @@ def update_salary(project_code):
 
     except Exception as e:
         logger.exception("Exception during salary update")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 @salary_bp.route('/api/delete-salary/<int:project_code>', methods=['DELETE'])
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def delete_salary(project_code):
+    wproj, werror = project_write_guard(project_code, respect_system_lock=True)
+    if werror:
+        return werror
     fin_kod = request.args.get('fin_kod') or (request.get_json(silent=True) or {}).get('fin_kod')
 
     query = Salary.query.filter_by(project_code=project_code)
@@ -211,4 +223,4 @@ def delete_salary(project_code):
         return jsonify({'message': 'Salary record deleted'}), 200
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': 'Internal server error'}), 400

@@ -3,6 +3,7 @@ from decimal import Decimal
 from config.limiter import limiter
 from flask import Blueprint, request, jsonify
 from utils.jwt_required import token_required
+from utils.access import project_read_guard, project_write_guard
 from models.smetaModels.smetaModel import Smeta
 from models.smetaModels.other_expensesModel import db, other_exp_model
 
@@ -16,8 +17,11 @@ other_exp = Blueprint('other_exp', __name__)
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def create_other_exp():
-    data = request.get_json()
+    data = request.get_json(silent=True) or {}
     try:
+        wproj, werror = project_write_guard(data.get('project_code'), respect_system_lock=True)
+        if werror:
+            return werror
         new_other_exp = other_exp_model(
             project_code=data['project_code'],
             expenses_name=data['expenses_name'],
@@ -47,13 +51,16 @@ def create_other_exp():
     
     except Exception as e:
         logger.exception("Failed to create other_exp record")
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 @other_exp.route('/api/get-other_exp-all-tables/<int:project_code>', methods=['GET'])
 @limiter.limit("50 per second")
 @token_required([0, 1, 2, 3])
 def get_all_other_exps(project_code):
+    _rp, _re = project_read_guard(project_code)
+    if _re:
+        return _re
     other_exps = other_exp_model.query.filter_by(project_code=project_code).all()
     return jsonify([r.others() for r in other_exps]), 200
 
@@ -62,16 +69,17 @@ def get_all_other_exps(project_code):
 @token_required([0, 2])
 def update_other_exp(id):
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         other_exp = other_exp_model.query.get(id)
 
         if not other_exp:
             return jsonify({'message': 'other_exp record not found'}), 404
+        wproj, werror = project_write_guard(other_exp.project_code, respect_system_lock=True)
+        if werror:
+            return werror
 
         old_total_amount = other_exp.total_amount if other_exp.total_amount else 0
 
-        if 'project_code' in data:
-            other_exp.project_code = data['project_code']
         if 'expenses_name' in data:
             other_exp.expenses_name = data['expenses_name']
         if 'unit_of_measure' in data:
@@ -100,7 +108,7 @@ def update_other_exp(id):
     except Exception as e:
         logger.exception("Failed to update other_exp record")
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 @other_exp.route('/api/delete-other_exp-table/<int:project_code>/<int:id>', methods=['DELETE'])
@@ -108,6 +116,9 @@ def update_other_exp(id):
 @token_required([0, 2])
 def delete_other_exp(project_code, id):
     try:
+        wproj, werror = project_write_guard(project_code, respect_system_lock=True)
+        if werror:
+            return werror
         record = other_exp_model.query.filter_by(project_code=project_code, id=id).first()
         if not record:
             return jsonify({'message': 'other_exp record not found'}), 404
@@ -123,4 +134,4 @@ def delete_other_exp(project_code, id):
         db.session.rollback()
         import traceback
         logger.error("Error occurred in delete_other_exp: %s", traceback.format_exc())
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500

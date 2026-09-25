@@ -14,21 +14,63 @@ from exceptions.exception import handle_success
 from exceptions.exception import handle_not_found
 from exceptions.exception import handle_missing_field
 from exceptions.exception import handle_global_exception
+from utils.identity import email_taken
+from utils.email_validation import normalise_email, has_valid_syntax
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 user_bp = Blueprint('user', __name__)
 
+
+def _is_real_image(data):
+    """True when the bytes decode as an image. The extension alone is chosen by
+    the uploader, so a renamed file of any other type would otherwise be
+    stored and later served as a profile photo."""
+    try:
+        from io import BytesIO
+        from PIL import Image
+        with Image.open(BytesIO(data)) as img:
+            img.verify()
+        return True
+    except Exception:
+        return False
+
+
+def _email_error(value, fin_kod):
+    """None when `value` may be stored as this person's address, else why not.
+    Addresses are sign-in identifiers, so they must be well-formed and unique
+    across all accounts (case-insensitively)."""
+    email = normalise_email(value)
+    if not has_valid_syntax(email):
+        return 'E-poçt ünvanı düzgün formatda deyil.'
+    if email_taken(email, exclude_fin=fin_kod):
+        return 'Bu e-poçt ünvanı artıq başqa hesabda istifadə olunur.'
+    return None
+
 @user_bp.route('/api/profile/<string:fin_kod>', methods=['GET'])
 @limiter.limit("10 per second")
-# @token_required([0, 1, 2])
+@token_required([0, 1, 2, 3])
 def get_profile(fin_kod):
+   """A single profile.
+
+   Requires a valid token — the full database used to be reachable here with no
+   authentication at all, and because the identifier IS the FIN code the whole
+   user base could be enumerated (pentest F2, IDOR). Full personal data is now
+   returned ONLY to the profile's own owner or to an admin; everyone else (a
+   lead viewing a teammate, a teammate viewing the lead) receives a PII-free
+   professional card via `user_public_details`.
+   """
    try:
        user = User.query.filter_by(fin_kod=fin_kod).first()
        if not user:
            return handle_not_found(404)
-       return handle_success(user.user_details(), "User found successfully.")  
+
+       caller = g.user.get('fin_kod')
+       is_admin = g.user.get('role') == 2
+       if is_admin or caller == fin_kod:
+           return handle_success(user.user_details(), "User found successfully.")
+       return handle_success(user.user_public_details(), "User found successfully.")
    except Exception as e:
        return handle_global_exception(str(e))
 
@@ -37,7 +79,14 @@ def get_profile(fin_kod):
 @token_required([0, 1, 2])
 def edit_user_details(fin_kod):
     try:
-        data = request.get_json()
+        # You may only edit your OWN profile; admins may edit anyone. Without
+        # this any authenticated user could overwrite another person's profile
+        # simply by naming their FIN in the URL (pentest — Broken Object Level
+        # Authorization).
+        if g.user.get('role') != 2 and g.user.get('fin_kod') != fin_kod:
+            return {'error': 'You can only edit your own profile.', 'status': 403}, 403
+
+        data = request.get_json(silent=True) or {}
         user = User.query.filter_by(fin_kod=fin_kod).first()
         if not user:
             return handle_not_found(404)
@@ -51,6 +100,12 @@ def edit_user_details(fin_kod):
             "scientific_name", "scientific_name_date", "work_location",
             "work_phone", "work_email", "born_date"
         ]
+
+        if data.get('work_email'):
+            problem = _email_error(data['work_email'], fin_kod)
+            if problem:
+                return {'error': problem, 'status': 400}, 400
+            data['work_email'] = normalise_email(data['work_email'])
 
         for field in editable_fields:
             if field in data:
@@ -119,6 +174,8 @@ def update_profile_image(fin_kod):
             }, 400
         if not image_bytes:
             return {'error': 'The uploaded image is empty.', 'status': 400}, 400
+        if not _is_real_image(image_bytes):
+            return {'error': 'The uploaded file is not a valid image.', 'status': 400}, 400
 
         user.image = image_bytes
         user.updated_at = datetime.utcnow()
@@ -139,9 +196,14 @@ def update_profile_image(fin_kod):
 def complete_profile():
     try:
         data = request.form
-        print("Received form data:", data)
-        print("Received files:", request.files)
-        
+
+        # The profile being completed is named by `fin_kod` in the body. Only
+        # its owner or an admin may write it, otherwise an authenticated user
+        # could overwrite anyone's profile and photo (BOLA).
+        target_fin = data.get('fin_kod')
+        if g.user.get('role') != 2 and g.user.get('fin_kod') != target_fin:
+            return {'error': 'You can only complete your own profile.', 'status': 403}, 403
+
         required_fields = [
             'born_place',
             'living_location', 'home_phone', 'personal_mobile_number', 'personal_email',
@@ -156,23 +218,29 @@ def complete_profile():
                 logger.warning(f"Missing required field: {field}")
                 return handle_missing_field(404)
 
-        print("Checking for image_file...")
         image_file = request.files.get('image')
 
         if image_file:
             image_bytes = image_file.read()
         else:
             logger.warning("Missing image file in request")
-            print("missing_field")
             return handle_missing_field(404)
 
-        fin_kod = data['fin_kod']
-        logger.info(f"Looking up user by FIN: {fin_kod}")
+        extension = image_file.filename.rsplit('.', 1)[-1].lower() if '.' in (image_file.filename or '') else ''
+        if extension not in current_app.config['ALLOWED_PROFILE_IMAGE_EXTENSIONS']:
+            return {'error': 'Only jpg, jpeg, png and webp images are allowed.', 'status': 400}, 400
+        if len(image_bytes) > current_app.config['MAX_PROFILE_IMAGE_SIZE'] or not _is_real_image(image_bytes):
+            return {'error': 'The uploaded file is not a valid image (max 5 MB).', 'status': 400}, 400
+
+        for email_field in ('personal_email', 'work_email'):
+            problem = _email_error(data.get(email_field), target_fin)
+            if problem:
+                return {'error': problem, 'status': 400}, 400
+
+        fin_kod = target_fin
         user = User.query.filter_by(fin_kod=fin_kod).first()
 
         if not user:
-            logger.warning(f"No user found with FIN: {fin_kod}")
-            print("No user found with FIN:", fin_kod)
             return handle_not_found(404)
         
         user.image = image_bytes
@@ -180,7 +248,7 @@ def complete_profile():
         user.living_location = data.get('living_location')
         user.home_phone = data.get('home_phone')
         user.personal_mobile_number = data.get('personal_mobile_number')
-        user.personal_email = data.get('personal_email')
+        user.personal_email = normalise_email(data.get('personal_email'))
         user.citizenship = data.get('citizenship')
         user.personal_id_number = data.get('personal_id_number')
         user.sex = data.get('sex')
@@ -195,7 +263,7 @@ def complete_profile():
         user.scientific_name_date = datetime.strptime(data.get('scientific_name_date'), '%Y-%m-%d') if data.get('scientific_name_date') else None
         user.work_location = data.get('work_location')
         user.work_phone = data.get('work_phone')
-        user.work_email = data.get('work_email')
+        user.work_email = normalise_email(data.get('work_email'))
         user.profile_completed = 1
         user.born_date = data.get('born_date')
 
@@ -204,11 +272,21 @@ def complete_profile():
         return {"message": "Profile completed successfully."}, 200
     except Exception as e:
         logger.exception("An unexpected error occurred while completing the profile")
-        return {"error": "Internal server error", "message": str(e)}, 500
+        return {"error": "Internal server error", "message": "Daxili server xetasi bas verdi."}, 500
 
 @user_bp.route("/api/users/all", methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("60 per minute")
+@token_required([2])
 def get_all_approved_user():
+    """Admin-only user directory, for role management and the chat search.
+
+    This endpoint used to be reachable with NO authentication and returned the
+    FULL profile of every user — FIN code, ID-card number, phones, personal
+    e-mail, date/place of birth, the Base64 photo and the internal numeric id —
+    i.e. the whole personal-data set of every account, in one ~22MB response
+    (pentest F1 + F9, CRITICAL). It now requires an admin token and returns only
+    the lean, id-free directory fields the admin screens actually use.
+    """
     try:
         name = request.args.get("name")
         surname = request.args.get("surname")
@@ -232,9 +310,7 @@ def get_all_approved_user():
                 user_query = user_query.filter(User.surname.ilike(f"%{surname}%"))
             user = user_query.first()
             if user:
-                user_details = user.user_details()
-                user_details["project_role"] = auth_user.project_role
-                users.append(user_details)
+                users.append(user.user_list_summary(project_role=auth_user.project_role))
 
         return handle_success(users, "Users fetched successfully")
     except Exception as e:
@@ -357,6 +433,11 @@ def upload_cv(fin_kod):
 @token_required([0, 1, 2])
 def download_cv(fin_kod):
     try:
+        # A CV is personal data: only its owner or an admin may download it,
+        # mirroring the upload check above (BOLA hardening).
+        if g.user.get('role') != 2 and g.user.get('fin_kod') != fin_kod:
+            return {"status": 403, "message": "Bu əməliyyata icazəniz yoxdur."}, 403
+
         user = User.query.filter_by(fin_kod=fin_kod).first()
         if not user or not user.cv_stored_filename:
             return handle_not_found(404)

@@ -3,6 +3,7 @@ from decimal import Decimal
 from config.limiter import limiter
 from models.projectModel import Project
 from utils.jwt_required import token_required
+from utils.access import project_read_guard, project_write_guard
 from flask import Blueprint, request, jsonify
 from models.smetaModels.smetaModel import Smeta
 from models.smetaModels.subjectModel import db, SubjectOfPurchase
@@ -17,12 +18,13 @@ subject_bp = Blueprint('subject_bp', __name__)
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def add_subject():
-    data = request.get_json()
-    logger.debug(f"Received data for add_subject: {data}")
+    data = request.get_json(silent=True) or {}
     try:
+        wproj, werror = project_write_guard(data.get('project_code'), respect_system_lock=True)
+        if werror:
+            return werror
         matching_project = Project.query.filter_by(
-            project_code=data['project_code'],
-            fin_kod=data['fin_code']
+            project_code=data['project_code']
         ).first()
 
         if not matching_project:
@@ -58,13 +60,16 @@ def add_subject():
     except Exception as e:
         logger.error(f"Error while adding subject: {e}", exc_info=True)
         db.session.rollback()
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': 'Internal server error'}), 400
 
 @subject_bp.route("/api/subject/smeta/<int:project_code>", methods=['GET'])
 @limiter.limit("50 per second")
 @token_required([0, 1, 2])
 def get_subject_smeta_by_project_code(project_code):
     try:
+        _rp, _re = project_read_guard(project_code)
+        if _re:
+            return _re
         subject_smeta = SubjectOfPurchase.query.filter_by(project_code=project_code).all()
 
         return handle_success([subject.subject_details() for subject in subject_smeta], "Smeta fetched successfully.")
@@ -80,6 +85,9 @@ def update_subject(project_code):
     logger.debug(f"Received update request for subject, project_code={project_code}, data={data}")
 
     try:
+        wproj, werror = project_write_guard(project_code, respect_system_lock=True)
+        if werror:
+            return werror
         subject = SubjectOfPurchase.query.filter_by(project_code=project_code).first()
 
         if not subject:
@@ -125,13 +133,16 @@ def update_subject(project_code):
     except Exception as e:
         logger.exception(f"Exception during subject update for project_code={project_code}")
         db.session.rollback()
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 @subject_bp.route('/api/delete/smeta/subject/<int:project_code>/<int:id>', methods=['DELETE'])
 @token_required([0, 2])
 def delete_subject(project_code, id):
     try:
+        wproj, werror = project_write_guard(project_code, respect_system_lock=True)
+        if werror:
+            return werror
         subject = SubjectOfPurchase.query.filter_by(id=id, project_code=project_code).first()
 
         if not subject:
@@ -147,4 +158,4 @@ def delete_subject(project_code, id):
 
     except Exception as e:
         db.session.rollback()
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': 'Internal server error'}), 400
