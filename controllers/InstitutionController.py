@@ -13,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 institution_bp = Blueprint('institution', __name__)
 
 @institution_bp.route('/api/institutions', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 # @token_required([0, 1, 2])
 def get_institutions():
     """

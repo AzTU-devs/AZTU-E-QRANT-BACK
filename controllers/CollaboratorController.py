@@ -194,7 +194,7 @@ def notify_removed_collaborator(fin_kod, project, template):
 # ----------------------------------------------------------------- reads ----
 
 @collaborator_bp.route("/api/collaborators", methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def get_collaborators():
     # Every team membership in the system, by FIN: admins only.
@@ -211,7 +211,7 @@ def get_collaborators():
         return handle_global_exception(str(e))
 
 @collaborator_bp.route("/api/collaborators/<int:project_code>")
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def get_collaborators_by_fin_kod(project_code):
     try:
@@ -244,7 +244,7 @@ def get_collaborators_by_fin_kod(project_code):
         return handle_global_exception(str(e))
    
 @collaborator_bp.route("/api/app-wait-collaborators/<int:project_code>", methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def get_app_wait_collaborators_by_fin_kod(project_code):
     try:
@@ -278,7 +278,7 @@ def get_app_wait_collaborators_by_fin_kod(project_code):
         return handle_global_exception(str(e))
 
 @collaborator_bp.route("/api/project/owner/<int:project_code>", methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def get_project_owner(project_code):
     try:
@@ -304,7 +304,7 @@ def get_project_owner(project_code):
 
 
 @collaborator_bp.route("/api/my-collaborator-status", methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def my_collaborator_status():
     """The caller's own memberships in the ACTIVE competition.
@@ -340,7 +340,7 @@ def my_collaborator_status():
 
 @collaborator_bp.route("/api/memberships", methods=['GET'])
 @collaborator_bp.route("/api/memberships/<string:fin_kod>", methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def get_memberships(fin_kod=None):
     """Everything one person takes part in during the ACTIVE competition —
@@ -404,7 +404,7 @@ def get_memberships(fin_kod=None):
 
 
 @collaborator_bp.route("/api/project/<int:project_code>/collaborator-candidates", methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def collaborator_candidates(project_code):
     """People an admin may still add to this project.
@@ -477,7 +477,7 @@ def collaborator_candidates(project_code):
 # ---------------------------------------------------------------- writes ----
 
 @collaborator_bp.route('/api/be-collaborator', methods=['POST'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def be_collaborator():
     """Apply to join a project as an executor.
@@ -571,7 +571,7 @@ def be_collaborator():
 
 
 @collaborator_bp.route('/api/project/<int:project_code>/collaborator', methods=['POST'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def add_collaborator(project_code):
     """Put a person on a project's team directly. Admin only.
@@ -659,7 +659,7 @@ def add_collaborator(project_code):
 
 
 @collaborator_bp.route('/api/project/<int:project_code>/collaborator/<string:fin_kod>', methods=['DELETE'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def remove_collaborator(project_code, fin_kod):
     """Take a person off a project's team.
@@ -698,7 +698,7 @@ def remove_collaborator(project_code, fin_kod):
 
     
 @collaborator_bp.route('/api/app-collaborator/<string:fin_kod>', methods=['POST'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def approve_collaborator(fin_kod):
     try:
@@ -738,7 +738,7 @@ def approve_collaborator(fin_kod):
         return handle_global_exception(str(e))
     
 @collaborator_bp.route('/api/reject-collaborator/<string:fin_kod>', methods=['DELETE'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def reject_collaborator(fin_kod):
     try:

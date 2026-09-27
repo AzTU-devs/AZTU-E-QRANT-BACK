@@ -16,7 +16,7 @@ services_bp = Blueprint('services_bp', __name__)
 
 
 @services_bp.route('/api/add-services', methods=['POST'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def add_subject():
     data = request.get_json(silent=True) or {}
@@ -51,7 +51,7 @@ def add_subject():
 
 
 @services_bp.route('/api/get-services/<int:project_code>', methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def get_subjects(project_code):
     try:
@@ -66,7 +66,7 @@ def get_subjects(project_code):
 
 
 @services_bp.route('/api/update-services/<int:project_code>', methods=['PATCH'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def update_service(project_code):
     try:
@@ -106,7 +106,7 @@ def update_service(project_code):
 
 
 @services_bp.route('/api/delete-services/<int:project_code>/<int:id>', methods=['DELETE'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def delete_subject(project_code, id):
     try:

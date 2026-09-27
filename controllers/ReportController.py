@@ -105,7 +105,7 @@ def _get_or_create_report(project_code, quarter_number, year):
 
 
 @report_bp.route('/api/reports/save', methods=['POST'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def save_report():
     try:
@@ -165,7 +165,7 @@ def save_report():
 
 
 @report_bp.route('/api/reports/<int:project_code>/<int:quarter_number>/<int:year>', methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def get_report(project_code, quarter_number, year):
     try:
@@ -194,7 +194,7 @@ def get_report(project_code, quarter_number, year):
 
 
 @report_bp.route('/api/reports/files/upload', methods=['POST'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def upload_report_files():
     """4-cü rüb hesabatına bir və ya bir neçə fayl (pdf, doc, docx) əlavə edir."""
@@ -279,7 +279,7 @@ def upload_report_files():
 
 
 @report_bp.route('/api/reports/files/<int:project_code>/<int:quarter_number>/<int:year>', methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def list_report_files(project_code, quarter_number, year):
     """Verilmiş hesabata aid faylların siyahısını qaytarır."""
@@ -308,7 +308,7 @@ def list_report_files(project_code, quarter_number, year):
 
 
 @report_bp.route('/api/reports/files/download/<int:file_id>', methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def download_report_file(file_id):
     """Faylı yükləmək üçün qaytarır."""
@@ -333,7 +333,7 @@ def download_report_file(file_id):
 
 
 @report_bp.route('/api/reports/files/<int:file_id>', methods=['DELETE'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def delete_report_file(file_id):
     """Yüklənmiş faylı silir."""
@@ -361,7 +361,7 @@ def delete_report_file(file_id):
 
 
 @report_bp.route('/api/reports/project/<int:project_code>', methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def list_reports(project_code):
     """List every quarterly report saved for a project (used by the admin view)."""
@@ -381,7 +381,7 @@ def list_reports(project_code):
 
 
 @report_bp.route('/api/reports-pdf/<int:project_code>', methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("10 per minute")
 @token_required([0, 1, 2, 3])
 def reports_pdf(project_code):
     """Export a project's quarterly reports as a PDF. Optional ?quarter=&year= filters."""
@@ -459,7 +459,7 @@ def reports_pdf(project_code):
 
 
 @report_bp.route('/api/reports-docx/<int:project_code>', methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("10 per minute")
 @token_required([0, 1, 2, 3])
 def reports_docx(project_code):
     """Export a project's quarterly reports as a DOCX. Optional ?quarter=&year= filters."""

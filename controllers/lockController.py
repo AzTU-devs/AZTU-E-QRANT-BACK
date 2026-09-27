@@ -17,7 +17,7 @@ def set_lock(value: bool):
     db.session.commit()
 
 @lock_bp.route("/api/lock-status", methods=["GET"])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def lock_status():
     # Requires a token: the system's lock state is internal operational
@@ -32,7 +32,7 @@ def lock_status():
         return jsonify({"error": "Database error"}), 500
 
 @lock_bp.route("/api/lock", methods=["POST"])
-@limiter.limit("20 per second")
+@limiter.limit("120 per minute")
 @token_required([2])
 def lock():
     # Admin-only. This flips the whole platform into a read-only "locked" state;
@@ -47,7 +47,7 @@ def lock():
         return jsonify({"error": "Database error"}), 500
 
 @lock_bp.route("/api/unlock", methods=["POST"])
-@limiter.limit("20 per second")
+@limiter.limit("120 per minute")
 @token_required([2])
 def unlock():
     # Admin-only (see `lock` above).

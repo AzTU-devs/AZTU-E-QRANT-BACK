@@ -22,10 +22,18 @@ class Auth(db.Model):
     # An expert receives a one-time password by e-mail and must replace it
     # before the account is usable for anything else.
     must_change_password = db.Column(db.Boolean, nullable=False, default=False)
+    # Bumped on password change/reset, block and logout. Every access token
+    # carries the value it was minted with; a mismatch means the token predates
+    # one of those events and is rejected, so old tokens die at once (B-L3).
+    token_version = db.Column(db.Integer, nullable=False, default=0)
 
+    def bump_token_version(self):
+        self.token_version = (self.token_version or 0) + 1
 
     def set_password(self, password):
         self.password_hash = generate_password_hash(password)
+        # Any password change invalidates every token issued before it.
+        self.bump_token_version()
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)

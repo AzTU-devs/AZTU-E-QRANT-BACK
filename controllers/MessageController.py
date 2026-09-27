@@ -134,7 +134,7 @@ def _send_message_email(recipient, sender_name, preview):
 # ------------------------------------------------------------------ user ----
 
 @message_bp.route('/api/messages/thread', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0])
 def get_my_thread():
     """The user's single chat with admin. Marks admin messages as read."""
@@ -153,7 +153,7 @@ def get_my_thread():
 
 
 @message_bp.route('/api/messages/thread', methods=['POST'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0])
 def send_message_as_user():
     """Send a message (text and/or attachments) to admin."""
@@ -197,7 +197,7 @@ def send_message_as_user():
 
 
 @message_bp.route('/api/messages/unread-count', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0])
 def my_unread_messages():
     try:
@@ -214,7 +214,7 @@ def my_unread_messages():
 # ----------------------------------------------------------------- admin ----
 
 @message_bp.route('/api/messages/threads', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def list_threads():
     """Admin inbox: every user's chat with last message + unread count."""
@@ -239,7 +239,7 @@ def list_threads():
 
 
 @message_bp.route('/api/messages/threads/<string:user_fin_kod>', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def get_thread_admin(user_fin_kod):
     try:
@@ -256,7 +256,7 @@ def get_thread_admin(user_fin_kod):
 
 
 @message_bp.route('/api/messages/threads/<string:user_fin_kod>', methods=['POST'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def send_message_as_admin(user_fin_kod):
     try:
@@ -301,7 +301,7 @@ def send_message_as_admin(user_fin_kod):
 # --------------------------------------------------------------- download ----
 
 @message_bp.route('/api/messages/attachment/<int:attachment_id>', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def download_attachment(attachment_id):
     try:

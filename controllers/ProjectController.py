@@ -169,7 +169,7 @@ def full_project_row(project):
 
 
 @project_offer.route('/api/save/project', methods=['POST'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def save_project():
     current_app.logger.info("POST /api/save/project called")
@@ -286,7 +286,7 @@ def serialize_project(project):
     }
 
 @project_offer.route("/api/approve_project", methods=['POST'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def approve_project():
     # Admin-only (finding B-M4). `approved` is otherwise an automatic
@@ -337,7 +337,7 @@ def approve_project():
 
 
 @project_offer.route("/api/project/return-for-revision", methods=['POST'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def return_project_for_revision():
     """Admin-only: send a submitted proposal back to its lead for corrections.
@@ -424,7 +424,7 @@ def return_project_for_revision():
 
 
 @project_offer.route("/api/project/winner", methods=['POST'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def set_project_winner():
     """Admin-only: mark / unmark a project as a competition winner."""
@@ -458,7 +458,7 @@ def set_project_winner():
 
 
 @project_offer.route("/api/project/archive/edit-access", methods=['POST'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def set_archive_edit_access():
     """Admin-only: open / close an ARCHIVED project so its owner can edit it.
@@ -504,7 +504,7 @@ def set_archive_edit_access():
 
 
 @project_offer.route("/api/archive/project/<int:project_code>", methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def get_archived_project_for_edit(project_code):
     """The owner's (or an admin's) view of an archived project that has been
@@ -530,7 +530,7 @@ def get_archived_project_for_edit(project_code):
 
 
 @project_offer.route('/api/my-project-history', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def my_project_history():
     """Every project the signed-in user has been part of across ALL competitions
@@ -585,7 +585,7 @@ def my_project_history():
 
 
 @project_offer.route('/api/projects', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def get_projects():
     current_app.logger.info("GET /api/projects called")
@@ -619,7 +619,7 @@ def get_projects():
 # new submitted users api
 
 @project_offer.route('/api/projects/submitted', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def get_projects_submitted():
     current_app.logger.info("GET /api/projects called")
@@ -659,7 +659,7 @@ def get_projects_submitted():
 
 
 @project_offer.route('/api/projects/archive', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def get_projects_archive():
     """Admin-only: all projects from PREVIOUS (non-active) competitions."""
@@ -691,7 +691,7 @@ def get_projects_archive():
 
 
 @project_offer.route("/api/project/<string:fin_kod>")
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0 ,1, 2])
 def get_project_by_fin_kod(fin_kod):
     try:
@@ -717,7 +717,7 @@ def get_project_by_fin_kod(fin_kod):
         return handle_global_exception(str(e))
     
 @project_offer.route("/api/project/<int:project_code>", methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def project_by_project_code(project_code):
     try:
@@ -737,7 +737,7 @@ def project_by_project_code(project_code):
         return handle_global_exception(str(e))
 
 @project_offer.route('/api/upd/project', methods=['PATCH'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def update_project_offer():
     data = request.get_json(silent=True) or {}
@@ -787,7 +787,7 @@ def update_project_offer():
 
 
 @project_offer.route('/api/delete/project', methods=['DELETE'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def delete_project_offer():
     data = request.get_json(silent=True) or {}
@@ -837,7 +837,7 @@ def delete_project_offer():
     }, 200
 
 @project_offer.route("/api/project-details/<int:project_code>", methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def get_project_details_by_project_code(project_code):
 
@@ -897,7 +897,7 @@ def get_project_details_by_project_code(project_code):
 
 
 @project_offer.route("/api/submit-project", methods=['POST'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def submit_project():
     data = request.get_json()
@@ -976,7 +976,7 @@ def submit_project():
     }, 200
 
 @project_offer.route("/api/col-project/<string:fin_kod>")
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1])
 def collaborator_projet(fin_kod):
     # Read your OWN memberships only, and only for the ACTIVE competition — the
@@ -1004,7 +1004,7 @@ def collaborator_projet(fin_kod):
     }, 200
 
 @project_offer.route("/api/project-owner/<int:project_code>")
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def get_project_owner(project_code):
     project, error = project_read_guard(project_code)
@@ -1048,7 +1048,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
 
 @project_offer.route("/api/project-pdf/<int:project_code>", methods=["GET"])
-@limiter.limit("100 per second")
+@limiter.limit("10 per minute")
 @token_required([0, 1, 2, 3])
 def download_pdf(project_code):
     # Register the local Noto Sans font (supports Azerbaijani letters)
@@ -1807,7 +1807,7 @@ from flask import send_file
 import pandas as pd
 
 @project_offer.route("/api/project-excel/<int:project_code>", methods=["GET"])
-@limiter.limit("100 per second")
+@limiter.limit("10 per minute")
 @token_required([0, 1, 2, 3])
 def download_excel(project_code):
     # Budget lines and salaries by FIN: admins, the lead, the team and the

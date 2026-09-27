@@ -17,7 +17,7 @@ subject_bp = Blueprint('subject_bp', __name__)
 
 
 @subject_bp.route('/api/add-subject', methods=['POST'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def add_subject():
     data = request.get_json(silent=True) or {}
@@ -52,7 +52,7 @@ def add_subject():
 
 
 @subject_bp.route("/api/subject/smeta/<int:project_code>", methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def get_subject_smeta_by_project_code(project_code):
     try:
@@ -66,7 +66,7 @@ def get_subject_smeta_by_project_code(project_code):
 
 
 @subject_bp.route('/api/update-subject/<int:project_code>', methods=['PATCH'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def update_subject(project_code):
     try:
@@ -106,7 +106,7 @@ def update_subject(project_code):
 
 
 @subject_bp.route('/api/delete/smeta/subject/<int:project_code>/<int:id>', methods=['DELETE'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def delete_subject(project_code, id):
     try:

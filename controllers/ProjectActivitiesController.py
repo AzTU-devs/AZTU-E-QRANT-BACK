@@ -14,7 +14,7 @@ project_activity = Blueprint('project_activity', __name__)
 
 
 @project_activity.route('/api/project-activity/create', methods=['POST'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def create_activity():
     try:
@@ -53,7 +53,7 @@ def create_activity():
         return jsonify({"error": "Internal server error"}), 500
 
 @project_activity.route('/api/project-activity/<int:project_code>', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def get_activities_by_project_code(project_code):
     try:
@@ -78,7 +78,7 @@ def get_activities_by_project_code(project_code):
         return jsonify({"error": "Internal server error"}), 500
 
 @project_activity.route('/api/project-activity/<int:project_code>/<int:month>', methods=['DELETE'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def delete_activity_by_month(project_code, month):
     try:
@@ -110,7 +110,7 @@ def delete_activity_by_month(project_code, month):
         return jsonify({"error": "Internal server error"}), 500
 
 @project_activity.route('/api/project-activity/update/<int:id>', methods=['PATCH'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def update_activity(id):
     try:
@@ -147,7 +147,7 @@ def update_activity(id):
         return jsonify({"error": "Internal server error"}), 500
 
 @project_activity.route('/api/project-activity/delete/<int:id>', methods=['DELETE'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def delete_activity(id):
     try:

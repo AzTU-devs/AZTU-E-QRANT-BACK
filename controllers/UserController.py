@@ -49,7 +49,7 @@ def _email_error(value, fin_kod):
     return None
 
 @user_bp.route('/api/profile/<string:fin_kod>', methods=['GET'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([0, 1, 2, 3])
 def get_profile(fin_kod):
    """A single profile.
@@ -75,7 +75,7 @@ def get_profile(fin_kod):
        return handle_global_exception(str(e))
 
 @user_bp.route('/api/profile/<string:fin_kod>/edit', methods=['PUT'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([0, 1, 2])
 def edit_user_details(fin_kod):
     try:
@@ -123,7 +123,7 @@ def edit_user_details(fin_kod):
         return handle_global_exception(str(e))
    
 @user_bp.route('/api/profile/<string:fin_kod>/image', methods=['POST'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([0, 1, 2])
 def update_profile_image(fin_kod):
     """Replace a profile photo.
@@ -179,7 +179,7 @@ def update_profile_image(fin_kod):
 
 
 @user_bp.route('/api/approve/profile', methods=['POST'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def complete_profile():
     try:
@@ -306,7 +306,7 @@ def get_all_approved_user():
 
 
 @user_bp.route('/api/user/<string:fin_kod>', methods=['DELETE'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def delete_user(fin_kod):
     """Admin-only: erase a person and everything of theirs.
@@ -364,7 +364,7 @@ def _cv_allowed(filename):
 
 
 @user_bp.route('/api/profile/<string:fin_kod>/cv', methods=['POST'])
-@limiter.limit("20 per second")
+@limiter.limit("120 per minute")
 @token_required([0, 1, 2])
 def upload_cv(fin_kod):
     """Upload/replace the user's CV (part of the personal data)."""
@@ -417,7 +417,7 @@ def upload_cv(fin_kod):
 
 
 @user_bp.route('/api/profile/<string:fin_kod>/cv', methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def download_cv(fin_kod):
     try:

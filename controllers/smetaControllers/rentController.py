@@ -27,7 +27,7 @@ def _validated_amounts(data):
 
 
 @rent_bp.route('/api/rent', methods=['POST'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def create_rent():
     data = request.get_json(silent=True) or {}
@@ -61,7 +61,7 @@ def create_rent():
 
 
 @rent_bp.route('/api/get-rent-all-tables/<int:project_code>', methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def get_all_rents(project_code):
     _rp, _re = project_read_guard(project_code)
@@ -72,7 +72,7 @@ def get_all_rents(project_code):
 
 
 @rent_bp.route('/api/edit-rent-table/<int:project_code>', methods=['PATCH'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def update_rent(project_code):
     try:
@@ -112,7 +112,7 @@ def update_rent(project_code):
 
 
 @rent_bp.route('/api/delete-rent-table/<int:project_code>/<int:id>', methods=['DELETE'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def delete_rent(project_code, id):
     try:

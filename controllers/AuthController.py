@@ -1,6 +1,7 @@
 import re
 import secrets
 import logging
+import threading
 from werkzeug.security import generate_password_hash, check_password_hash
 from utils.email_validation import normalise_email, has_valid_syntax
 from utils.identity import resolve_account_by_email, resolve_profile, email_taken
@@ -8,6 +9,7 @@ from models.otpModel import Otp
 from models.authModel import Auth
 from models.expertModel import EXPERT_ROLE
 from config.limiter import limiter
+from flask_limiter.util import get_remote_address
 from flask_cors import cross_origin
 from models.userModel import db, User
 from utils.email_util import send_email
@@ -20,7 +22,7 @@ from exceptions.exception import handle_conflict
 from exceptions.exception import handle_not_found
 from models.collaboratorModel import  Collaborator
 from exceptions.exception import handle_unauthorized
-from flask import Blueprint, request, render_template, g
+from flask import Blueprint, request, render_template, g, current_app
 from exceptions.exception import handle_missing_field
 from exceptions.exception import handle_signin_success, handle_success
 from utils.jwt_util import encode_auth_token, encode_expert_token, encode_otp_token, decode_otp_token, password_fingerprint
@@ -40,6 +42,10 @@ USER_TYPES = {0, 1, 2}
 ASSIGNABLE_ROLES = {0, 1, 2}
 MIN_PASSWORD_LENGTH = 8
 FIN_PATTERN = re.compile(r'^[A-Za-z0-9]{5,20}$')
+
+# One neutral signup response, whether or not the FIN/e-mail already exists, so
+# signup cannot be used to enumerate accounts (finding B-L2).
+GENERIC_SIGNUP_MESSAGE = "Qeydiyyat sorğunuz qəbul edildi."
 
 # One message for every sign-in failure, so the response never tells an
 # attacker whether an account exists, is pending, is blocked, or which of the
@@ -66,17 +72,38 @@ def _signin_identifier(data):
 
 
 def _json_account_key():
-    """Rate-limit key: the account an attempt is aimed at, whatever its IP."""
+    """Loose per-account key (all IPs): a high ceiling that stops sustained
+    guessing of one account without letting an attacker lock it out cheaply."""
     data = request.get_json(silent=True) or {}
     return 'acct:' + normalise_email(_signin_identifier(data))
 
 
-def _route_account_key():
-    """Per-account key for the OTP routes, which take an address or a FIN in
-    the URL: both spellings of one account share one budget of attempts."""
+def _json_account_ip_key():
+    """Strict key scoped to account + client IP: many rapid failures from one
+    source are throttled, but an attacker cannot lock a victim out globally by
+    burning the per-account budget from elsewhere (finding B-L5)."""
+    data = request.get_json(silent=True) or {}
+    return 'acct:' + normalise_email(_signin_identifier(data)) + '|' + get_remote_address()
+
+
+def _otp_identifier():
+    """The account an OTP request targets, from the URL (legacy) or the JSON
+    body. Both spellings of one account collapse to one key."""
     identifier = str((request.view_args or {}).get('fin_kod') or '')
+    if not identifier:
+        data = request.get_json(silent=True) or {}
+        identifier = str(data.get('identifier') or data.get('email') or data.get('fin_kod') or '')
+    return identifier
+
+
+def _route_account_key():
+    identifier = _otp_identifier()
     user, _ = resolve_profile(identifier)
     return 'acct:' + (user.fin_kod.lower() if user else identifier.strip().lower())
+
+
+# validate-otp reads the identifier from the body only.
+_body_account_key = _route_account_key
 
 
 @auth_bp.route('/auth/signup', methods=['POST'])
@@ -132,16 +159,19 @@ def signup():
         if not has_valid_syntax(email):
             return {"status": 400, "message": "E-poçt ünvanı düzgün formatda deyil."}, 400
 
-        # The address is the sign-in identifier, so it must be unique across
-        # everyone (case-insensitively), expert logins included.
-        if email_taken(email):
-            return {"status": 409, "message": "Bu e-poçt ünvanı artıq istifadə olunur."}, 409
+        # Account enumeration (finding B-L2): whether or not the FIN/e-mail is
+        # already taken, the caller gets the SAME generic response. A duplicate
+        # is logged and silently not created, so signup cannot be used to test
+        # which FINs or addresses are registered.
+        already_exists = (
+            email_taken(email)
+            or Auth.query.filter_by(fin_kod=fin_kod).first() is not None
+            or User.query.filter_by(fin_kod=fin_kod).first() is not None
+        )
+        if already_exists:
+            logger.info("Signup for an already-registered FIN/e-mail; returning generic response")
+            return handle_creation(GENERIC_SIGNUP_MESSAGE)
 
-        if Auth.query.filter_by(fin_kod=fin_kod).first() or User.query.filter_by(fin_kod=fin_kod).first():
-            logger.warning("User already exists with fin_kod: %s", fin_kod)
-            return handle_conflict(409)
-        
-        
         auth_record = Auth(
             fin_kod=fin_kod,
             user_type=user_type,
@@ -180,7 +210,7 @@ def signup():
             send_email(subject, recipient, html_content)
 
         logger.info("User successfully registered")
-        return handle_creation("User registered successfully.")
+        return handle_creation(GENERIC_SIGNUP_MESSAGE)
 
     except Exception as e:
         logger.exception("An unexpected error occurred during signup")
@@ -188,8 +218,12 @@ def signup():
 
 @auth_bp.route('/auth/signin', methods=['POST'])
 @limiter.limit("20 per minute; 200 per hour")
-@limiter.limit("10 per 10 minutes", key_func=_json_account_key)
+@limiter.limit("10 per 10 minutes", key_func=_json_account_ip_key)
+@limiter.limit("50 per hour", key_func=_json_account_key)
 def signin():
+    # Three limits: per client IP, strict per account+IP (throttles one
+    # attacker), and a loose per-account ceiling (a victim can still sign in
+    # even while someone hammers their account from elsewhere) — B-L5.
     # Two limits: per client address, and per targeted account — the second one
     # stops a password-guessing run against one person from many addresses.
     try:
@@ -291,8 +325,32 @@ def signin():
         return {"error": "Internal server error", "message": "Daxili server xetasi bas verdi."}, 500
     
 
+def _current_account_key():
+    """Rate-limit key for an authenticated action: the caller's own account."""
+    return 'acct:' + str((getattr(g, 'user', None) or {}).get('fin_kod') or get_remote_address())
+
+
+@auth_bp.route('/api/logout', methods=['POST'])
+@limiter.limit("30 per minute")
+@token_required([0, 1, 2, EXPERT_ROLE])
+def logout():
+    """Invalidate every token for the caller by bumping the token version
+    (finding B-L3). The client also drops its copy; this makes a stolen or
+    still-cached token useless server-side immediately."""
+    try:
+        account = Auth.query.filter_by(fin_kod=g.user.get('fin_kod')).first()
+        if account:
+            account.bump_token_version()
+            db.session.commit()
+        return handle_success(None, 'Çıxış edildi.')
+    except Exception:
+        db.session.rollback()
+        logger.exception("logout failed")
+        return {"error": "Internal server error", "message": "Daxili server xetasi bas verdi."}, 500
+
+
 @auth_bp.route('/auth/change-password', methods=['POST'])
-@limiter.limit("10 per second")
+@limiter.limit("5 per 15 minutes", key_func=_current_account_key)
 @token_required([0, 1, 2, EXPERT_ROLE])
 def change_password():
     """Replace your own password.
@@ -322,21 +380,36 @@ def change_password():
         if account.check_password(new_password):
             return {'error': 'Yeni şifrə köhnə şifrədən fərqli olmalıdır.', 'status': 400}, 400
 
+        # set_password bumps token_version, so every OTHER session's token dies
+        # (B-L3). We hand back a fresh token minted at the new version so the
+        # CURRENT session keeps working.
         account.set_password(new_password)
         account.must_change_password = False
         db.session.commit()
 
-        logger.info("Password changed for %s", account.fin_kod)
-        return handle_success({'fin_kod': account.fin_kod}, 'Şifrə uğurla dəyişdirildi.')
+        if account.project_role == EXPERT_ROLE:
+            fresh = encode_expert_token(account.id, account.fin_kod)
+            profile_completed = 1
+        else:
+            profile = User.query.filter_by(fin_kod=account.fin_kod).first()
+            profile_completed = profile.profile_completed if profile else 0
+            fresh = encode_auth_token(account.id, account.fin_kod, profile_completed, account.project_role)
 
-    except Exception as e:
+        logger.info("Password changed for account id %s", account.id)
+        return handle_signin_success(
+            {'fin_kod': account.fin_kod, 'must_change_password': False,
+             'profile_completed': profile_completed},
+            'Şifrə uğurla dəyişdirildi.', fresh,
+        )
+
+    except Exception:
         db.session.rollback()
         logger.exception("change_password failed")
         return {"error": "Internal server error", "message": "Daxili server xetasi bas verdi."}, 500
 
 
 @auth_bp.route("/auth/app-wait-users", methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def get_app_wait_users():
     # Admin-only: this lists the FIN codes of everyone awaiting approval, which
@@ -362,7 +435,7 @@ def get_app_wait_users():
     
 
 @auth_bp.route("/auth/app-user/<string:fin_kod>", methods=['POST'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def app_user(fin_kod):
     # Admin-only: approves a pending registration. Without a token check anyone
@@ -459,71 +532,77 @@ import pytz
 OTP_SENT_MESSAGE = "OTP sent successfully"
 
 
+def _deliver_otp_async(app, subject, recipient, html):
+    """Send the OTP e-mail on a background thread so the endpoint's response
+    time does not depend on the SMTP round-trip — otherwise the delay itself
+    would reveal whether the account exists (finding B-L4 / B-L2 timing)."""
+    def _run():
+        with app.app_context():
+            try:
+                send_email(subject, recipient, html)
+            except Exception:
+                logger.exception("Background OTP e-mail failed")
+    threading.Thread(target=_run, daemon=True).start()
+
+
+@auth_bp.route("/auth/send-otp", methods=['POST'])
 @auth_bp.route("/auth/send-otp/<string:fin_kod>", methods=['POST'])
 @limiter.limit("5 per minute; 20 per hour")
 @limiter.limit("3 per 10 minutes", key_func=_route_account_key)
-def send_otp(
-    fin_kod: str
-):
-    # Rate-limited per address AND per targeted account, so it can be used
-    # neither to flood someone's mailbox nor to enumerate accounts quickly.
+def send_otp(fin_kod=None):
+    # The identifier (e-mail) is taken from the JSON body; the legacy path form
+    # is still accepted. Rate-limited per address AND per account. Always the
+    # same response, and the e-mail goes out on a background thread so timing
+    # cannot reveal whether the account exists (B-L2 / B-L4).
     try:
-        # `fin_kod` in the URL is the e-mail address typed on the form (a FIN is
-        # still accepted for links made before the switch to e-mail sign-in).
-        user, account = resolve_profile(fin_kod)
+        identifier = fin_kod or (request.get_json(silent=True) or {}).get('identifier') \
+            or (request.get_json(silent=True) or {}).get('email')
+        user, account = resolve_profile(identifier or '')
 
         email = (user.work_email or user.personal_email) if user else None
-        if not user or not account or not email:
+        if user and account and email:
+            otp = generateOtp()
+            issued_at = datetime.now(pytz.timezone("Asia/Baku"))
+            # Only the newest code is ever valid; store its hash, never the code.
+            Otp.query.filter_by(fin_kod=user.fin_kod).delete()
+            new_otp = Otp(
+                fin_kod=user.fin_kod,
+                issued_at=issued_at,
+                expires_at=issued_at + timedelta(minutes=OTP_TTL_MINUTES),
+            )
+            new_otp.set_code(otp)
+            db.session.add(new_otp)
+            db.session.commit()
+
+            html_content = render_template("email/otp_verification.html", name=user.name, otp_code=otp)
+            _deliver_otp_async(current_app._get_current_object(), "OTP", email, html_content)
+        else:
             logger.info("OTP requested for an unknown or unreachable account")
-            return handle_success(fin_kod, OTP_SENT_MESSAGE)
 
-        otp = generateOtp()
+        return handle_success(None, OTP_SENT_MESSAGE)
 
-        baku_tz = pytz.timezone("Asia/Baku")
-        issued_at = datetime.now(baku_tz)
-
-        # Only the newest code is ever valid.
-        Otp.query.filter_by(fin_kod=user.fin_kod).delete()
-        new_otp = Otp(
-            fin_kod = user.fin_kod,
-            issued_at=issued_at,
-            otp=otp,
-            expires_at=issued_at + timedelta(minutes=OTP_TTL_MINUTES)
-        )
-
-        db.session.add(new_otp)
-        db.session.commit()
-
-        html_content = render_template("email/otp_verification.html", name=user.name, otp_code=otp)
-
-        # The OTP is worthless if the mail never leaves, so a delivery failure
-        # must surface instead of being reported as success.
-        if not send_email("OTP", email, html_content):
-            logger.error("OTP generated for account id %s but the email could not be sent.", account.id)
-            return {
-                "status": 502,
-                "message": "OTP e-poçtu göndərilə bilmədi. Zəhmət olmasa bir azdan yenidən cəhd edin."
-            }, 502
-
-        return handle_success(fin_kod, OTP_SENT_MESSAGE)
-
-    except Exception as e:
+    except Exception:
         db.session.rollback()
         logger.exception("Unexpected error while sending an OTP")
         return {"error": "Internal server error", "message": "Daxili server xetasi bas verdi."}, 500
 
 
-@auth_bp.route("/auth/validate-otp/<string:fin_kod>/<int:otp>", methods=['POST'])
+@auth_bp.route("/auth/validate-otp", methods=['POST'])
 @limiter.limit("10 per minute; 50 per hour")
-@limiter.limit("5 per 15 minutes", key_func=_route_account_key)
-def validate_otp(fin_kod: str, otp: int):
+@limiter.limit("5 per 15 minutes", key_func=_body_account_key)
+def validate_otp():
     # The code is only 6 digits, so guesses are capped per address AND per
-    # account: with at most 5 tries per code (it lives 5 minutes) guessing is
-    # hopeless. Every failure answers identically.
+    # account. Both the identifier and the code come from the JSON body — the
+    # code no longer travels in the URL, where nginx would log it (B-L4).
     invalid = ({"statusCode": 400, "message": "Invalid or expired OTP."}, 400)
     try:
-        # Address or FIN, exactly as sent to /auth/send-otp.
-        user, account = resolve_profile(fin_kod)
+        data = request.get_json(silent=True) or {}
+        identifier = data.get('identifier') or data.get('email') or data.get('fin_kod')
+        otp = data.get('otp')
+        if identifier is None or otp is None:
+            return invalid
+
+        user, account = resolve_profile(str(identifier))
         if not user or not account:
             return invalid
         fin_kod = user.fin_kod
@@ -540,9 +619,6 @@ def validate_otp(fin_kod: str, otp: int):
         # tz-aware — comparing it with a naive utcnow() raises TypeError.
         now_utc = datetime.now(timezone.utc)
         otp_expiry = sent_otp.expires_at
-
-        # Rows written before the column carried a timezone come back naive;
-        # they were stored as UTC, so label them as such.
         if otp_expiry.tzinfo is None:
             otp_expiry = otp_expiry.replace(tzinfo=timezone.utc)
 
@@ -551,7 +627,8 @@ def validate_otp(fin_kod: str, otp: int):
             db.session.commit()
             return invalid
 
-        if not secrets.compare_digest(str(otp).zfill(OTP_LENGTH), str(sent_otp.otp).zfill(OTP_LENGTH)):
+        # Constant-time comparison against the stored SHA-256 (never plaintext).
+        if not sent_otp.matches(str(otp).strip()):
             return invalid
 
         # Single use: the code dies the moment it is accepted.
@@ -561,7 +638,7 @@ def validate_otp(fin_kod: str, otp: int):
         token = encode_otp_token(user.fin_kod, account.password_hash)
         return handle_success(token, "OTP validated successfully.")
 
-    except Exception as e:
+    except Exception:
         db.session.rollback()
         logger.exception("Unexpected error during OTP validation")
         return {"error": "Internal server error", "message": "Daxili server xetasi bas verdi."}, 500

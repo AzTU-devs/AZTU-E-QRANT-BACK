@@ -56,7 +56,7 @@ def sanitize_html(raw):
 
 
 @announcement_bp.route('/api/announcements', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def get_announcements():
     """Published announcements for authenticated user dashboards (all roles)."""
@@ -74,7 +74,7 @@ def get_announcements():
 
 
 @announcement_bp.route('/api/admin/announcements', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def get_all_announcements():
     """All announcements (published + drafts) for admin management."""
@@ -91,7 +91,7 @@ def get_all_announcements():
 
 
 @announcement_bp.route('/api/announcements', methods=['POST'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def create_announcement():
     try:
@@ -124,7 +124,7 @@ def create_announcement():
 
 
 @announcement_bp.route('/api/announcements/<int:announcement_id>', methods=['PATCH'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def update_announcement(announcement_id):
     try:
@@ -159,7 +159,7 @@ def update_announcement(announcement_id):
 
 
 @announcement_bp.route('/api/announcements/<int:announcement_id>', methods=['DELETE'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def delete_announcement(announcement_id):
     try:

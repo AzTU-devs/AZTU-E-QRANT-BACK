@@ -9,7 +9,7 @@ notification_bp = Blueprint('notification_bp', __name__)
 
 
 @notification_bp.route('/api/notifications', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def list_notifications():
     """Recent notifications for the signed-in user (newest first)."""
@@ -28,7 +28,7 @@ def list_notifications():
 
 
 @notification_bp.route('/api/notifications/unread-count', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def unread_count():
     try:
@@ -40,7 +40,7 @@ def unread_count():
 
 
 @notification_bp.route('/api/notifications/<int:notification_id>/read', methods=['POST'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def mark_read(notification_id):
     try:
@@ -57,7 +57,7 @@ def mark_read(notification_id):
 
 
 @notification_bp.route('/api/notifications/read-all', methods=['POST'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def mark_all_read():
     try:

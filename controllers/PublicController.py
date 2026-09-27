@@ -64,7 +64,7 @@ def _approved_collaborators(project_code):
 
 
 @public_bp.route('/api/public/projects', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 def public_projects():
     """Public list: only SUBMITTED proposals (or winners), name + description.
 
@@ -107,7 +107,7 @@ def public_projects():
 
 
 @public_bp.route('/api/public/project/<int:project_code>', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 def public_project_detail(project_code):
     """Single approved project with its lead and approved collaborators."""
     current_app.logger.info(f"GET /api/public/project/{project_code} called")
@@ -142,7 +142,7 @@ def public_project_detail(project_code):
 
 
 @public_bp.route('/api/public/leads-tree', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 def public_leads_tree():
     """Tree of WINNER project leads with their projects and approved collaborators."""
     current_app.logger.info("GET /api/public/leads-tree called")
@@ -168,7 +168,7 @@ def public_leads_tree():
 
 
 @public_bp.route('/api/public/winners', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 def public_winners():
     """Winner projects selected by the admin, with lead + approved collaborators."""
     current_app.logger.info("GET /api/public/winners called")
@@ -199,7 +199,7 @@ def public_winners():
 
 
 @public_bp.route('/api/public/announcements', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 def public_announcements():
     """Published announcements for the public website."""
     current_app.logger.info("GET /api/public/announcements called")
@@ -218,7 +218,7 @@ def public_announcements():
 
 
 @public_bp.route('/api/public/announcement/<int:announcement_id>', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 def public_announcement_detail(announcement_id):
     """A single published announcement (for the public detail page)."""
     current_app.logger.info(f"GET /api/public/announcement/{announcement_id} called")

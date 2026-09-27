@@ -12,7 +12,7 @@ logging.basicConfig(level=logging.INFO)
 priotet_bp = Blueprint('priotet', __name__)
 
 @priotet_bp.route('/api/create-priotet', methods=['POST'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def create_priotet():
     # Admin-only: priorities are a controlled reference list (finding B-M5).
@@ -38,7 +38,7 @@ def create_priotet():
         return handle_global_exception(e)
 
 @priotet_bp.route('/api/priotets', methods=['GET'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([0, 1, 2])
 def get_priotets():
     try:
@@ -58,7 +58,7 @@ def get_priotets():
         return handle_global_exception(e)
 
 @priotet_bp.route('/api/priotet/<int:prioritet_code>')
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def get_priotet_by_code(prioritet_code):
     try:
@@ -70,7 +70,7 @@ def get_priotet_by_code(prioritet_code):
         return handle_global_exception(e)
 
 @priotet_bp.route("/api/del-prioritet/<int:code>", methods=['DELETE'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def delete_prioritet(code):
     # Admin-only: deleting a priority was possible with no token (pentest F4).
@@ -89,7 +89,7 @@ def delete_prioritet(code):
         return handle_global_exception(e)
     
 @priotet_bp.route("/api/upd-prioritet", methods=['POST'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def upd_prioritet():
     # Admin-only: updating a priority was possible with no token (pentest F4).

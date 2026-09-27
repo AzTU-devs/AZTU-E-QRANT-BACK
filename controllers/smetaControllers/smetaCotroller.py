@@ -34,7 +34,7 @@ def _apply_direct_fields(smeta, data):
 
 
 @smeta_bp.route('/api/create-smeta', methods=['POST'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def create_smeta():
     """Admin-only: ensure the aggregate row exists and is consistent with the
@@ -57,7 +57,7 @@ def create_smeta():
 
 
 @smeta_bp.route('/api/update-smeta-field/<int:project_code>', methods=['PATCH'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def update_smeta_field(project_code):
     """Set ONE aggregate field. Restricted to the allow-listed direct fields —
@@ -87,7 +87,7 @@ def update_smeta_field(project_code):
 
 
 @smeta_bp.route("/api/main-smeta/<int:project_code>", methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def get_main_smeta_by_project_code(project_code):
     try:
@@ -132,7 +132,7 @@ def get_main_smeta_by_project_code(project_code):
 
 
 @smeta_bp.route('/api/edit-smeta/<int:project_code>', methods=['PATCH'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def update_smeta(project_code):
     """Recompute the category totals from line items and, optionally, set the
@@ -155,7 +155,7 @@ def update_smeta(project_code):
 
 
 @smeta_bp.route('/api/delete-smeta/<int:project_code>', methods=['DELETE'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def delete_smeta(project_code):
     try:

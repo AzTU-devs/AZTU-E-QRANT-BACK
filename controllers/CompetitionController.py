@@ -29,7 +29,7 @@ def _parse_date(value):
 
 
 @competition_bp.route('/api/competitions', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def list_competitions():
     try:
@@ -40,7 +40,7 @@ def list_competitions():
 
 
 @competition_bp.route('/api/competition/active', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def active_competition():
     try:
@@ -51,7 +51,7 @@ def active_competition():
 
 
 @competition_bp.route('/api/competition', methods=['POST'])
-@limiter.limit("20 per second")
+@limiter.limit("120 per minute")
 @token_required([2])
 def create_competition():
     """Admin creates a new competition (season). If `activate` is true (default),
@@ -103,7 +103,7 @@ def create_competition():
 
 
 @competition_bp.route('/api/competition/<int:competition_id>/activate', methods=['POST'])
-@limiter.limit("20 per second")
+@limiter.limit("120 per minute")
 @token_required([2])
 def activate_competition(competition_id):
     """Make the given competition the single active one."""

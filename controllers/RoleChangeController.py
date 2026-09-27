@@ -37,7 +37,7 @@ def _user_name(fin_kod):
 
 
 @role_change_bp.route('/api/role-change', methods=['POST'])
-@limiter.limit("20 per second")
+@limiter.limit("120 per minute")
 @token_required([0, 1])
 def create_role_change_request():
     """A user (lead or member) requests to switch to the other role."""
@@ -101,7 +101,7 @@ def create_role_change_request():
 
 
 @role_change_bp.route('/api/role-change/mine', methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1])
 def my_role_change_requests():
     """The signed-in user's own requests (history)."""
@@ -119,7 +119,7 @@ def my_role_change_requests():
 
 
 @role_change_bp.route('/api/role-change/pending', methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def pending_role_change_requests():
     """Admin: all pending requests, enriched with the requester's name."""
@@ -210,7 +210,7 @@ def _notify(req):
 
 
 @role_change_bp.route('/api/role-change/<int:request_id>/approve', methods=['POST'])
-@limiter.limit("20 per second")
+@limiter.limit("120 per minute")
 @token_required([2])
 def approve_role_change(request_id):
     try:
@@ -227,7 +227,7 @@ def approve_role_change(request_id):
 
 
 @role_change_bp.route('/api/role-change/<int:request_id>/reject', methods=['POST'])
-@limiter.limit("20 per second")
+@limiter.limit("120 per minute")
 @token_required([2])
 def reject_role_change(request_id):
     try:

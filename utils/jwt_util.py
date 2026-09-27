@@ -3,6 +3,7 @@ import hashlib
 import datetime
 from flask import current_app
 from models.userModel import User
+from models.authModel import Auth
 from models.expertModel import EXPERT_ROLE
 
 # Every token says what it is for. An access token must never be accepted as a
@@ -37,6 +38,11 @@ def password_fingerprint(password_hash):
     return hashlib.sha256((password_hash or '').encode('utf-8')).hexdigest()[:32]
 
 
+def _token_version(fin_kod):
+    account = Auth.query.filter_by(fin_kod=fin_kod).first()
+    return (account.token_version or 0) if account else 0
+
+
 def encode_auth_token(user_id, fin_kod, profile_completed, role):
     user = User.query.filter_by(fin_kod=fin_kod).first()
     if not user:
@@ -49,6 +55,7 @@ def encode_auth_token(user_id, fin_kod, profile_completed, role):
         'profile_completed': str(profile_completed),
         'role': role,
         'typ': ACCESS_TOKEN,
+        'tv': _token_version(fin_kod),
         'exp': expiration_time
     })
 
@@ -67,6 +74,7 @@ def encode_expert_token(user_id, email):
         'profile_completed': '1',
         'role': EXPERT_ROLE,
         'typ': ACCESS_TOKEN,
+        'tv': _token_version(email),
         'exp': expiration_time
     })
 
@@ -83,7 +91,10 @@ def decode_auth_token(auth_token):
             'user_id': payload['sub'],
             'fin_kod': payload['fin_kod'],
             'profile_completed': payload.get('profile_completed'),
-            'role': payload.get('role')
+            'role': payload.get('role'),
+            # Missing on tokens minted before B-L3; treated as 0 so they keep
+            # working until they expire (hours).
+            'token_version': payload.get('tv', 0),
         }
     except jwt.ExpiredSignatureError:
         current_app.logger.info("Rejected an expired access token")

@@ -47,6 +47,9 @@ def authenticate_request():
         or account.fin_kod != payload.get('fin_kod')
         or not account.approved
         or account.blocked
+        # A token minted before the account's last password change / reset /
+        # block / logout carries a stale version and is rejected (B-L3).
+        or int(payload.get('token_version', 0)) != int(account.token_version or 0)
     ):
         return None, handle_unauthorized(401, 'Token is invalid or expired.')
 

@@ -29,7 +29,7 @@ def _eligible_salary_fins(project):
 
 
 @salary_bp.route('/api/create-salary-table', methods=['POST'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def add_salary():
     data = request.get_json(silent=True) or {}
@@ -73,7 +73,7 @@ def add_salary():
 
 
 @salary_bp.route("/api/salary/smeta/<int:project_code>", methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2, 3])
 def get_salary_smeta_by_project_code(project_code):
     try:
@@ -120,7 +120,7 @@ def get_salary_smeta_by_project_code(project_code):
 
 
 @salary_bp.route('/api/all-salaries-table', methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def get_all_salaries():
     salaries = Salary.query.all()
@@ -128,7 +128,7 @@ def get_all_salaries():
 
 
 @salary_bp.route('/api/edit-salary-table/<int:project_code>', methods=['PATCH'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def update_salary(project_code):
     try:
@@ -164,7 +164,7 @@ def update_salary(project_code):
 
 
 @salary_bp.route('/api/delete-salary/<int:project_code>', methods=['DELETE'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 2])
 def delete_salary(project_code):
     try:

@@ -106,7 +106,7 @@ def upsert_expert_account(expert):
 # ------------------------------------------------------------- admin: CRUD ---
 
 @expert_bp.route("/api/create-expert", methods=['POST'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def create_expert():
     try:
@@ -176,7 +176,7 @@ def create_expert():
 
 
 @expert_bp.route("/api/experts/<int:expert_id>/resend-verification", methods=['POST'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def resend_verification(expert_id):
     try:
@@ -200,7 +200,7 @@ def resend_verification(expert_id):
 
 
 @expert_bp.route("/api/expert/verify/<string:token>", methods=['POST', 'GET'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 def verify_expert_email(token):
     """Public: the link in the confirmation e-mail lands here.
 
@@ -230,7 +230,7 @@ def verify_expert_email(token):
 
 
 @expert_bp.route("/api/experts", methods=['GET'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def get_experts():
     try:
@@ -249,7 +249,7 @@ def get_experts():
 
 
 @expert_bp.route("/api/experts/<int:expert_id>", methods=['DELETE'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def delete_expert(expert_id):
     try:
@@ -281,7 +281,7 @@ def delete_expert(expert_id):
 # -------------------------------------------------------- admin: assignment ---
 
 @expert_bp.route("/api/set-expert", methods=['POST'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def set_expert():
     try:
@@ -363,7 +363,7 @@ def set_expert():
 
 
 @expert_bp.route("/api/unset-expert", methods=['POST'])
-@limiter.limit("10 per second")
+@limiter.limit("60 per minute")
 @token_required([2])
 def unset_expert():
     try:
@@ -390,7 +390,7 @@ def unset_expert():
 # ------------------------------------------------------------ expert: work ---
 
 @expert_bp.route("/api/expert/my-projects", methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([EXPERT_ROLE])
 def expert_projects():
     """Every project this expert has been appointed to, with their own verdict."""
@@ -434,7 +434,7 @@ def expert_projects():
 
 
 @expert_bp.route("/api/expert/assessment/<int:project_code>", methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([2, EXPERT_ROLE])
 def get_assessment(project_code):
     """The verdicts on one project. An expert sees only their own."""
@@ -457,7 +457,7 @@ def get_assessment(project_code):
 
 
 @expert_bp.route("/api/assessment/criteria", methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([2, EXPERT_ROLE])
 def assessment_criteria():
     """The scoring sheet: the criteria, their weights and the total."""
@@ -466,7 +466,7 @@ def assessment_criteria():
 
 
 @expert_bp.route("/api/expert/assessment", methods=['POST'])
-@limiter.limit("20 per second")
+@limiter.limit("120 per minute")
 @token_required([EXPERT_ROLE])
 def save_assessment():
     """Record or revise this expert's scoring sheet for a project.
@@ -514,7 +514,7 @@ def save_assessment():
 
 
 @expert_bp.route("/api/project/<int:project_code>/assessments", methods=['GET'])
-@limiter.limit("50 per second")
+@limiter.limit("300 per minute")
 @token_required([2])
 def project_assessments(project_code):
     """Admin view: every expert verdict on a project, with the expert named."""
@@ -570,7 +570,7 @@ def _register_pdf_font():
 
 
 @expert_bp.route("/api/project/<int:project_code>/assessments/pdf", methods=['GET'])
-@limiter.limit("20 per second")
+@limiter.limit("10 per minute")
 @token_required([2])
 def project_assessments_pdf(project_code):
     """Admin-only: every expert's scoring sheet for one project, as a PDF."""

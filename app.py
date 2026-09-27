@@ -135,6 +135,22 @@ def ensure_schema():
             statements.append(
                 "ALTER TABLE auth ADD COLUMN must_change_password BOOLEAN DEFAULT FALSE"
             )
+        # Token invalidation on password change / logout (finding B-L3).
+        if 'token_version' not in auth_columns:
+            statements.append(
+                "ALTER TABLE auth ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"
+            )
+
+    # OTPs are now stored as a SHA-256 hash, and the plaintext column is no
+    # longer written (finding B-L4).
+    if 'otp' in inspector.get_table_names():
+        otp_columns = {col['name']: col for col in inspector.get_columns('otp')}
+        if 'otp_hash' not in otp_columns:
+            statements.append("ALTER TABLE otp ADD COLUMN otp_hash VARCHAR(64)")
+        # Stop requiring the plaintext column so new rows can omit it.
+        if 'otp' in otp_columns and not otp_columns['otp'].get('nullable', True):
+            if db.engine.dialect.name == 'postgresql':
+                statements.append("ALTER TABLE otp ALTER COLUMN otp DROP NOT NULL")
 
     if 'assessment' in inspector.get_table_names():
         assessment_columns = {col['name'] for col in inspector.get_columns('assessment')}

@@ -30,7 +30,7 @@ def _allowed(filename):
 
 
 @project_file_bp.route('/api/project/<int:project_code>/files', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def list_project_files(project_code):
     try:
@@ -49,7 +49,7 @@ def list_project_files(project_code):
 
 
 @project_file_bp.route('/api/project/<int:project_code>/files', methods=['POST'])
-@limiter.limit("30 per second")
+@limiter.limit("120 per minute")
 @token_required([0, 2])
 def upload_project_files(project_code):
     """Upload one or more files to a project — no limit on the number of files."""
@@ -110,7 +110,7 @@ def upload_project_files(project_code):
 
 
 @project_file_bp.route('/api/project/files/<int:file_id>', methods=['DELETE'])
-@limiter.limit("30 per second")
+@limiter.limit("120 per minute")
 @token_required([0, 2])
 def delete_project_file(file_id):
     try:
@@ -138,7 +138,7 @@ def delete_project_file(file_id):
 
 
 @project_file_bp.route('/api/project/files/<int:file_id>/download', methods=['GET'])
-@limiter.limit("100 per second")
+@limiter.limit("300 per minute")
 @token_required([0, 1, 2])
 def download_project_file(file_id):
     try:
