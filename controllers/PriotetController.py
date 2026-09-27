@@ -13,8 +13,9 @@ priotet_bp = Blueprint('priotet', __name__)
 
 @priotet_bp.route('/api/create-priotet', methods=['POST'])
 @limiter.limit("10 per second")
-@token_required([0, 1, 2])
+@token_required([2])
 def create_priotet():
+    # Admin-only: priorities are a controlled reference list (finding B-M5).
     try:
         data = request.get_json()
         prioritet_name = data.get("prioritet_name")

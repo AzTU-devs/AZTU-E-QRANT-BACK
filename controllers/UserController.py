@@ -122,18 +122,6 @@ def edit_user_details(fin_kod):
     except Exception as e:
         return handle_global_exception(str(e))
    
-@user_bp.route('/api/profile/image/<string:fin_kod>', methods=['GET'])
-@limiter.limit("10 per second")
-@token_required([0, 1, 2])
-def get_profile_image(fin_kod):
-    try:
-        user = User.query.filter_by(fin_kod=fin_kod).first()
-        if not user:
-            return handle_not_found(404)
-        return handle_success(user.get_profile_image(), "User image found successfully.")
-    except Exception as e:
-        return handle_global_exception(str(e))
-    
 @user_bp.route('/api/profile/<string:fin_kod>/image', methods=['POST'])
 @limiter.limit("10 per second")
 @token_required([0, 1, 2])

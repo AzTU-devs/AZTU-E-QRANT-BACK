@@ -9,6 +9,7 @@ returned here.
 
 from config.limiter import limiter
 from models.userModel import User
+from extentions.db import db
 from models.projectModel import Project
 from models.prioritetModel import Priotet
 from models.collaboratorModel import Collaborator
@@ -65,10 +66,17 @@ def _approved_collaborators(project_code):
 @public_bp.route('/api/public/projects', methods=['GET'])
 @limiter.limit("100 per second")
 def public_projects():
-    """List of approved projects with only name + description, grouped data."""
+    """Public list: only SUBMITTED proposals (or winners), name + description.
+
+    `approved` is an automatic "form complete" flag a lead can influence, so it
+    must not decide what appears on the public site (finding B-M4). Submission
+    is an explicit, deliberate act; winners are chosen by an admin.
+    """
     current_app.logger.info("GET /api/public/projects called")
     try:
-        projects = Project.query.filter_by(approved=1).all()
+        projects = Project.query.filter(
+            db.or_(Project.submitted.is_(True), Project.winner.is_(True))
+        ).all()
 
         # project.priotet is stored as Text while prioritet_code is Integer,
         # so key the lookup map by the string form to match reliably.
@@ -104,7 +112,10 @@ def public_project_detail(project_code):
     """Single approved project with its lead and approved collaborators."""
     current_app.logger.info(f"GET /api/public/project/{project_code} called")
     try:
-        project = Project.query.filter_by(project_code=project_code, approved=1).first()
+        project = Project.query.filter(
+            Project.project_code == project_code,
+            db.or_(Project.submitted.is_(True), Project.winner.is_(True))
+        ).first()
         if not project:
             return handle_success(None, 'Project not found.')
 

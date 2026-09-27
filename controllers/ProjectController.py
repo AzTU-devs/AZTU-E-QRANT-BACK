@@ -14,7 +14,10 @@ from utils.jwt_required import token_required
 from utils.archive_lock import project_is_archived, ARCHIVE_LOCKED_MESSAGE
 from utils.cascade_delete import delete_project_cascade
 from utils.notify import create_notification, notify_admins
-from utils.access import project_read_guard, is_admin
+from utils.access import (
+    project_read_guard, is_admin, submitted_lock_error, deadline_error,
+)
+from utils.smeta import project_grand_total
 from xml.sax.saxutils import escape as _xml_escape
 from utils.email_util import send_email
 from models.smetaModels.smetaModel import Smeta
@@ -171,12 +174,22 @@ def save_project():
         project, error = resolve_writable_project(fin_kod, project_code)
         if error:
             return error
+        # A submitted proposal is frozen until an admin returns it (B-L7).
+        locked = submitted_lock_error(project)
+        if locked:
+            return locked
         current_app.logger.info(f"Updating project_code={project_code} (explicit target)")
     else:
         # Scope to the ACTIVE competition so a returning user creates a NEW project
         # each season instead of overwriting last year's row.
         active = Competition.get_active()
         active_id = active.id if active else None
+
+        # The application window must be open to create or edit this season's
+        # proposal (B-L7). Admins are exempt.
+        dl_error = deadline_error(competition_id=active_id)
+        if dl_error:
+            return dl_error
 
         project = Project.query.filter_by(fin_kod=fin_kod, competition_id=active_id).first()
         if not project:
@@ -192,13 +205,19 @@ def save_project():
                 project.max_smeta_amount = active.max_smeta_amount
             db.session.add(project)
         else:
+            locked = submitted_lock_error(project)
+            if locked:
+                return locked
             current_app.logger.info(f"Updating existing project with fin_kod={fin_kod} in active competition")
 
     for field in [
         'project_name', 'project_purpose', 'project_annotation',
         'project_key_words', 'project_scientific_idea', 'project_structure',
         'team_characterization', 'project_monitoring', 'project_requirements',
-        'project_assessment', 'collaborator_limit', 'max_smeta_amount', 'priotet'
+        # `collaborator_limit` and `max_smeta_amount` are deliberately NOT here:
+        # they come only from the active competition and only an admin may change
+        # them (finding B-H1). A lead writing them could raise their own cap.
+        'project_assessment', 'priotet'
     ]:
         if field in data:
             setattr(project, field, data[field])
@@ -251,10 +270,13 @@ def serialize_project(project):
 
 @project_offer.route("/api/approve_project", methods=['POST'])
 @limiter.limit("100 per second")
-@token_required([0, 2])
+@token_required([2])
 def approve_project():
+    # Admin-only (finding B-M4). `approved` is otherwise an automatic
+    # "form complete" flag maintained by save_project; a lead must not be able
+    # to set it by hand and thereby mark their own proposal approved.
     try:
-        project_details = request.get_json()
+        project_details = request.get_json(silent=True) or {}
 
         fin_kod = project_details.get('fin_kod')
         # The form starts with an empty project_code and only learns the real
@@ -726,11 +748,17 @@ def update_project_offer():
     if not project:
         return {'error': 'Project not found for the provided fin_kod.'}, 404
 
+    # Frozen once submitted, until an admin returns it (B-L7).
+    locked = submitted_lock_error(project)
+    if locked:
+        return locked
+
     updatable_fields = [
         'project_name', 'project_purpose', 'project_annotation',
         'project_key_words', 'project_scientific_idea', 'project_structure',
         'team_characterization', 'project_monitoring', 'project_requirements',
-        'project_assessment', 'project_deadline', 'collaborator_limit', 'max_smeta_amount'
+        # `collaborator_limit` / `max_smeta_amount` intentionally excluded (B-H1).
+        'project_assessment', 'project_deadline'
     ]
 
     for field in updatable_fields:
@@ -771,6 +799,12 @@ def delete_project_offer():
     if not project:
         return {'error': 'Project not found for the provided fin_kod.'}, 404
 
+    # A lead cannot delete a submitted proposal; an admin must return it first
+    # (or delete it themselves) (B-L7).
+    locked = submitted_lock_error(project)
+    if locked:
+        return locked
+
     # Approved olanların silinmemesi ucun, isteye gore bunu acariq
     # if project.approved == 1:
     #     return {'error': 'Approved projects cannot be deleted.'}, 403
@@ -782,10 +816,10 @@ def delete_project_offer():
     try:
         removed = delete_project_cascade(project.project_code)
         db.session.commit()
-    except Exception as e:
+    except Exception:
         db.session.rollback()
         current_app.logger.exception("Failed to delete project %s", project.project_code)
-        return {'error': f'Project could not be deleted: {e}'}, 500
+        return {'error': 'Project could not be deleted.'}, 500
 
     return {
         'message': 'Project successfully deleted.',
@@ -873,32 +907,21 @@ def submit_project():
     if not project:
         return {'error': 'Project not found for the provided project_code.'}, 404
 
-    # Submission is deliberately permissive: a proposal that has not budgeted
-    # for rent, services or any other category — or has no smeta row at all —
-    # may still be submitted. Those sections are optional, and a project that
-    # simply does not rent anything must not be held back by an empty table.
-    #
-    # The ONLY budget rule enforced here is the cap on the total.
-    #
-    # The smeta is written with an INTEGER project_code in some places and a
-    # stringified one in others; match either, so the cap is never skipped just
-    # because the row was stored under the other shape.
-    smeta = Smeta.query.filter(
-        Smeta.project_code.in_([project.project_code, str(project.project_code)])
-    ).first()
+    # Enforce the application deadline on the server (B-L7): once the
+    # competition's window has closed, a lead can no longer submit.
+    dl_error = deadline_error(project)
+    if dl_error:
+        return dl_error
 
-    # `or 0` throughout: an untouched category is zero, not a reason to refuse.
-    total_amount = sum([
-        smeta.total_fee or 0,
-        smeta.total_salary or 0,
-        smeta.defense_fund or 0,
-        smeta.total_equipment or 0,
-        smeta.total_services or 0,
-        smeta.total_rent or 0,
-        smeta.other_expenses or 0,
-    ]) if smeta else 0
+    # Submission is deliberately permissive about EMPTY categories, but the
+    # total is checked against the cap. The grand total is RECOMPUTED here from
+    # the line-item tables (utils/smeta), never read from the stored aggregate —
+    # a lead could otherwise have written a small aggregate and slipped an
+    # over-budget proposal through (finding B-H1).
+    total_amount = project_grand_total(project.project_code)
+    db.session.commit()
 
-    # Use the project's configured cap (from the competition) instead of a literal.
+    # The cap comes only from the competition (snapshotted on the project).
     max_amount = project.max_smeta_amount or 50000
     if total_amount > max_amount:
         return {
