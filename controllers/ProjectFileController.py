@@ -9,6 +9,7 @@ from werkzeug.utils import secure_filename
 from models.projectFileModel import ProjectFile
 from utils.jwt_required import token_required
 from utils.access import project_read_guard, project_write_guard
+from utils.file_serving import serve_upload
 from exceptions.exception import handle_specific_not_found, handle_success, handle_global_exception
 
 logger = logging.getLogger(__name__)
@@ -150,15 +151,7 @@ def download_project_file(file_id):
         path = os.path.join(current_app.config['PROJECT_FILES_FOLDER'], record.stored_filename)
         if not os.path.exists(path):
             return handle_specific_not_found('File not found on server.')
-        # The type is derived from our own stored extension, not the one the
-        # uploader's browser claimed; responses to files are also sandboxed
-        # (see app.py), so an uploaded file can never run script on this origin.
-        guessed = mimetypes.guess_type(record.stored_filename)[0] or 'application/octet-stream'
-        return send_file(
-            path,
-            as_attachment=False,
-            download_name=record.original_filename,
-            mimetype=guessed,
-        )
+        # Raster/PDF inline, everything else (incl. SVG) forced to download (B-SVG).
+        return serve_upload(path, record.stored_filename, record.original_filename)
     except Exception as e:
         return handle_global_exception(str(e))

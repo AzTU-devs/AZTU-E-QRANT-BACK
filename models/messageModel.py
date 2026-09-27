@@ -74,15 +74,24 @@ class MessageAttachment(db.Model):
     file_size = db.Column(db.BigInteger)
     uploaded_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+    # Raster image extensions the UI may safely render inline. SVG is NOT here:
+    # it can carry script and is treated as a download, never an <img> (B-SVG).
+    RASTER_EXTENSIONS = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'}
+
+    def is_raster_image(self):
+        """Whether this attachment is a real raster image, decided from OUR
+        stored extension — never the uploader-supplied content type."""
+        name = self.stored_filename or ''
+        ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+        return ext in self.RASTER_EXTENSIONS
+
     def serialize(self):
-        content_type = self.content_type or ''
-        is_image = content_type.startswith('image/')
         return {
             'id': self.id,
             'original_filename': self.original_filename,
             'content_type': self.content_type,
             'file_size': self.file_size,
-            'is_image': is_image,
+            'is_image': self.is_raster_image(),
             'url': f"/api/messages/attachment/{self.id}",
             'uploaded_at': self.uploaded_at.isoformat() if self.uploaded_at else None,
         }

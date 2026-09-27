@@ -12,6 +12,7 @@ from models.messageModel import MessageThread, Message, MessageAttachment
 from utils.jwt_required import token_required
 from utils.email_util import send_email
 from utils.notify import create_notification, notify_admins
+from utils.file_serving import serve_upload
 from exceptions.exception import (
     handle_specific_not_found,
     handle_success,
@@ -319,15 +320,8 @@ def download_attachment(attachment_id):
         if not os.path.exists(path):
             return handle_specific_not_found('File not found on server.')
 
-        # Type from our stored extension, not the uploader's claim (see app.py
-        # for the sandbox applied to every file response).
-        import mimetypes
-        guessed = mimetypes.guess_type(attachment.stored_filename)[0] or 'application/octet-stream'
-        return send_file(
-            path,
-            as_attachment=False,
-            download_name=attachment.original_filename,
-            mimetype=guessed,
-        )
+        # Raster/PDF inline, everything else (incl. SVG) forced to download,
+        # type from our stored extension — never the uploader's claim (B-SVG).
+        return serve_upload(path, attachment.stored_filename, attachment.original_filename)
     except Exception as e:
         return handle_global_exception(str(e))

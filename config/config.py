@@ -25,15 +25,15 @@ class Config:
 
     # Bütün sənəd növləri və şəkillər üçün icazə (geniş siyahı).
     ALLOWED_MESSAGE_EXTENSIONS = {
-        # images
-        'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'heic', 'tiff',
+        # images (no 'svg': it can carry script — stored-XSS risk, finding B-SVG)
+        'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'tiff',
         # documents
         'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
         'txt', 'csv', 'rtf', 'odt', 'ods', 'odp',
         # archives
         'zip', 'rar', '7z',
     }
-    IMAGE_MESSAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'heic', 'tiff'}
+    IMAGE_MESSAGE_EXTENSIONS = {'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'tiff'}
 
     # Hər əlavənin maksimum ölçüsü: 25 MB
     MAX_MESSAGE_FILE_SIZE = 25 * 1024 * 1024
@@ -57,7 +57,8 @@ class Config:
     ALLOWED_PROJECT_FILE_EXTENSIONS = {
         'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx',
         'txt', 'csv', 'rtf', 'odt', 'ods', 'odp',
-        'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'heic', 'tiff',
+        # no 'svg' (stored-XSS risk, finding B-SVG)
+        'jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'heic', 'tiff',
         'zip', 'rar', '7z',
     }
     MAX_PROJECT_FILE_SIZE = 50 * 1024 * 1024
