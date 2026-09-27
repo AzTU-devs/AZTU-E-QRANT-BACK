@@ -1823,14 +1823,22 @@ def download_excel(project_code):
 
     output = BytesIO()
 
-    # Use context manager to avoid writer.save()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+    # CSV/Excel formula injection (finding B-L9): a cell whose text begins with
+    # = + - @ (or a control char) is neutralised with a leading apostrophe, and
+    # xlsxwriter is told never to auto-convert strings to formulas.
+    def esc(value):
+        if isinstance(value, str) and value[:1] in ('=', '+', '-', '@', '\t', '\r'):
+            return "'" + value
+        return value
+
+    with pd.ExcelWriter(output, engine='xlsxwriter',
+                        engine_kwargs={'options': {'strings_to_formulas': False}}) as writer:
         # Subject sheet
         if subject_smeta:
             df_subject = pd.DataFrame([{
                 "№": idx + 1,
-                "Equipment Name": s.equipment_name,
-                "Unit": s.unit_of_measure,
+                "Equipment Name": esc(s.equipment_name),
+                "Unit": esc(s.unit_of_measure),
                 "Price": s.price,
                 "Quantity": s.quantity,
                 "Total": s.total_amount
@@ -1843,8 +1851,8 @@ def download_excel(project_code):
         if service_smeta:
             df_services = pd.DataFrame([{
                 "№": idx + 1,
-                "Service Name": s.services_name,
-                "Unit": s.unit_of_measure,
+                "Service Name": esc(s.services_name),
+                "Unit": esc(s.unit_of_measure),
                 "Price": s.price,
                 "Quantity": s.quantity,
                 "Total": s.total_amount
@@ -1857,8 +1865,8 @@ def download_excel(project_code):
         if rent_smeta:
             df_rent = pd.DataFrame([{
                 "№": idx + 1,
-                "Rent Area": r.rent_area,
-                "Unit": r.unit_of_measure,
+                "Rent Area": esc(r.rent_area),
+                "Unit": esc(r.unit_of_measure),
                 "Unit Price": r.unit_price,
                 "Quantity": r.quantity,
                 "Duration": r.duration,
@@ -1872,8 +1880,8 @@ def download_excel(project_code):
         if other_exps:
             df_other = pd.DataFrame([{
                 "№": idx + 1,
-                "Expense Name": e.expenses_name,
-                "Unit": e.unit_of_measure,
+                "Expense Name": esc(e.expenses_name),
+                "Unit": esc(e.unit_of_measure),
                 "Price": e.unit_price,
                 "Quantity": e.quantity,
                 "Duration": e.duration,
@@ -1888,7 +1896,7 @@ def download_excel(project_code):
         if salary_smeta:
             df_salary = pd.DataFrame([{
                 "№": idx + 1,
-                "FIN KOD": s.fin_kod,
+                "FIN KOD": esc(s.fin_kod),
                 "Salary per Month": s.salary_per_month,
                 "Months": s.months,
                 "Total Salary": s.total_salary

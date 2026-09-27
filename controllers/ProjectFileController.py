@@ -66,12 +66,21 @@ def upload_project_files(project_code):
 
         folder = _folder()
         max_size = current_app.config['MAX_PROJECT_FILE_SIZE']
+        max_count = current_app.config['MAX_PROJECT_FILES_COUNT']
+        max_total = current_app.config['MAX_PROJECT_FILES_TOTAL_BYTES']
         uploaded_by = g.user.get('fin_kod') if getattr(g, 'user', None) else None
 
+        # Current usage for this project, to enforce the per-project quota (B-L8).
+        existing = ProjectFile.query.filter_by(project_code=project_code).all()
+        count_used = len(existing)
+        bytes_used = sum(f.file_size or 0 for f in existing)
+        incoming = [f for f in files if f and f.filename]
+        if count_used + len(incoming) > max_count:
+            return {"status": 400,
+                    "message": f"Bu layihə üçün maksimum {max_count} fayl yükləmək olar."}, 400
+
         saved = []
-        for file in files:
-            if not file or not file.filename:
-                continue
+        for file in incoming:
             if not _allowed(file.filename):
                 db.session.rollback()
                 allowed = ', '.join(sorted(current_app.config['ALLOWED_PROJECT_FILE_EXTENSIONS']))
@@ -84,6 +93,13 @@ def upload_project_files(project_code):
                 db.session.rollback()
                 mb = max_size // (1024 * 1024)
                 return {"status": 400, "message": f"'{file.filename}' çox böyükdür (maks. {mb} MB)."}, 400
+
+            bytes_used += size
+            if bytes_used > max_total:
+                db.session.rollback()
+                mb = max_total // (1024 * 1024)
+                return {"status": 400,
+                        "message": f"Bu layihənin fayllarının ümumi həcmi {mb} MB-ı aşır."}, 400
 
             original_name = secure_filename(file.filename) or 'file'
             ext = original_name.rsplit('.', 1)[1].lower() if '.' in original_name else 'bin'

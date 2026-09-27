@@ -17,3 +17,4 @@ uploads/
 .DS_Store
 .idea/
 .vscode/
+*.pyc

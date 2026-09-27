@@ -368,14 +368,11 @@ def main_app():
 
     # ---------------------------------------------------------------- CORS ----
     # Reflecting any Origin while also allowing credentials defeats the point of
-    # CORS (pentest F5). Restrict to an explicit allow-list. Override in each
-    # environment with CORS_ORIGINS (comma-separated); the defaults cover the
-    # production front-ends plus the usual local dev servers.
+    # CORS (pentest F5). Restrict to an explicit allow-list. The production
+    # values come from CORS_ORIGINS in the environment; the fallback is
+    # https-only (finding B-cleanup) — local dev sets CORS_ORIGINS itself.
     default_origins = (
-        "https://e-grant.aztu.edu.az,https://admin-e-grant.aztu.edu.az,"
-        "http://e-grant.aztu.edu.az,http://admin-e-grant.aztu.edu.az,"
-        "http://localhost:5173,http://127.0.0.1:5173,"
-        "http://localhost:3000,http://127.0.0.1:3000"
+        "https://e-grant.aztu.edu.az,https://admin-e-grant.aztu.edu.az"
     )
     allowed_origins = [
         o.strip() for o in os.getenv('CORS_ORIGINS', default_origins).split(',') if o.strip()

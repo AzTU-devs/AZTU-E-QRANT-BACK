@@ -62,3 +62,7 @@ class Config:
         'zip', 'rar', '7z',
     }
     MAX_PROJECT_FILE_SIZE = 50 * 1024 * 1024
+    # Per-project upload quota (finding B-L8): a project may hold at most this
+    # many files and this many bytes in total. Configurable via env.
+    MAX_PROJECT_FILES_COUNT = int(os.getenv('MAX_PROJECT_FILES_COUNT', '50'))
+    MAX_PROJECT_FILES_TOTAL_BYTES = int(os.getenv('MAX_PROJECT_FILES_TOTAL_MB', '200')) * 1024 * 1024
