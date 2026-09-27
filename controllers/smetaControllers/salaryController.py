@@ -4,16 +4,28 @@ from config.limiter import limiter
 from models.projectModel import Project
 from utils.jwt_required import token_required
 from utils.access import project_read_guard, project_write_guard
+from utils.validation import non_negative_number, invalid_amount
+from utils.smeta import line_total, recompute_project_smeta
 from flask import Blueprint, request, jsonify
-from models.smetaModels.smetaModel import Smeta
 from models.collaboratorModel import Collaborator
 from models.smetaModels.salaryModel import db, Salary
 from exceptions.exception import handle_specific_not_found, handle_global_exception
 
-logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 salary_bp = Blueprint('salary_bp', __name__)
+
+
+def _eligible_salary_fins(project):
+    """FINs that may carry a salary line on a project: the lead plus everyone
+    APPROVED on its team (B-L7). A salary for anyone else is refused."""
+    fins = {project.fin_kod}
+    fins.update(
+        c.fin_kod for c in Collaborator.query.filter_by(
+            project_code=project.project_code, approved=True
+        ).all()
+    )
+    return fins
 
 
 @salary_bp.route('/api/create-salary-table', methods=['POST'])
@@ -22,58 +34,42 @@ salary_bp = Blueprint('salary_bp', __name__)
 def add_salary():
     data = request.get_json(silent=True) or {}
     try:
-        wproj, werror = project_write_guard(data.get('project_code'), respect_system_lock=True)
+        project, werror = project_write_guard(data.get('project_code'), respect_system_lock=True)
         if werror:
             return werror
 
-        salary_per_month = data.get('salary_per_month')
-        months = data.get('months')
+        fin_kod = data.get('fin_kod')
+        if not fin_kod:
+            return jsonify({'error': 'fin_kod is required'}), 400
+        if fin_kod not in _eligible_salary_fins(project):
+            return jsonify({'error': 'Salary can only be set for the lead or an approved team member.'}), 403
 
-        if salary_per_month is None or months is None:
-            logger.error("Missing salary_per_month or months. Data: %s", data)
-            return jsonify({'error': 'Missing salary_per_month or months'}), 400
+        spm = non_negative_number(data.get('salary_per_month'))
+        months = non_negative_number(data.get('months'))
+        for name, val in (('salary_per_month', spm), ('months', months)):
+            if val is None:
+                return invalid_amount(name)
 
-        try:
-            salary_per_month = int(salary_per_month)
-            months = int(months)
-        except ValueError:
-            logger.error("Invalid input types: salary_per_month=%s (type=%s), months=%s (type=%s)",
-                         salary_per_month, type(salary_per_month), months, type(months))
-            return jsonify({'error': 'Invalid input types'}), 400
+        # One salary line per person per project.
+        if Salary.query.filter_by(project_code=project.project_code, fin_kod=fin_kod).first():
+            return jsonify({'error': 'A salary line for this person already exists.'}), 409
 
-        logger.debug("Parsed salary_per_month: %s, months: %s", salary_per_month, months)
-
-        total_salary = salary_per_month * months
-        logger.debug("Calculated total_salary: %s", total_salary)
-
-        logger.debug("Creating Salary with project_code=%s, fin_kod=%s", data['project_code'], data['fin_kod'])
         new_salary = Salary(
-            project_code=data['project_code'],
-            fin_kod=data['fin_kod'],
-            salary_per_month=salary_per_month,
+            project_code=project.project_code,
+            fin_kod=fin_kod,
+            salary_per_month=spm,
             months=months,
-            total_salary=total_salary
+            total_salary=line_total(spm, months),
         )
-
-        project_code = str(data['project_code'])
-
-        main_smeta = Smeta.query.filter_by(project_code=project_code).first()
-
-        if not main_smeta:
-            main_smeta = Smeta(project_code=project_code)
-            db.session.add(main_smeta)
-
-        main_smeta.total_salary = (main_smeta.total_salary or 0) + total_salary
-
-        logger.debug("New Salary object: %s", new_salary.salary_details())
         db.session.add(new_salary)
+        recompute_project_smeta(project.project_code)
         db.session.commit()
-
         return jsonify({"status": 201, 'message': 'Salary record created', 'data': new_salary.salary_details()}), 201
-    
-    except Exception as e:
+
+    except Exception:
+        db.session.rollback()
         logger.exception("Error occurred while creating salary record")
-        return jsonify({'error': 'Internal server error'}), 400
+        return jsonify({'error': 'Internal server error'}), 500
 
 
 @salary_bp.route("/api/salary/smeta/<int:project_code>", methods=['GET'])
@@ -85,12 +81,10 @@ def get_salary_smeta_by_project_code(project_code):
         if _re:
             return _re
 
-        # Get the project
         project = Project.query.filter_by(project_code=project_code).first()
         if not project:
             return handle_specific_not_found('Project not found')
 
-        # Get project owner info
         project_owner_user = User.query.filter_by(fin_kod=project.fin_kod).first()
         project_owner_salary = Salary.query.filter_by(project_code=project_code, fin_kod=project.fin_kod).first()
 
@@ -102,14 +96,11 @@ def get_salary_smeta_by_project_code(project_code):
             "salary": project_owner_salary.salary_details() if project_owner_salary else None,
         }
 
-        # Get collaborators
         collaborators = Collaborator.query.filter_by(project_code=project_code).all()
         collaborator_list = []
-
         for collaborator in collaborators:
             user = User.query.filter_by(fin_kod=collaborator.fin_kod).first()
             salary = Salary.query.filter_by(project_code=project_code, fin_kod=collaborator.fin_kod).first()
-
             collaborator_list.append({
                 "fin_kod": collaborator.fin_kod,
                 "name": user.name if user else None,
@@ -127,100 +118,73 @@ def get_salary_smeta_by_project_code(project_code):
         logger.exception("Error occurred while fetching salary smeta")
         return handle_global_exception(str(e))
 
+
 @salary_bp.route('/api/all-salaries-table', methods=['GET'])
 @limiter.limit("50 per second")
 @token_required([2])
 def get_all_salaries():
     salaries = Salary.query.all()
-    return jsonify([s.salarytable() for s in salaries]), 200
-
+    return jsonify([s.salary_details() for s in salaries]), 200
 
 
 @salary_bp.route('/api/edit-salary-table/<int:project_code>', methods=['PATCH'])
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def update_salary(project_code):
-    data = request.get_json(silent=True) or {}
-    wproj, werror = project_write_guard(project_code, respect_system_lock=True)
-    if werror:
-        return werror
-    fin_kod = data.get('fin_kod')
-    salary_per_month = data.get('salary_per_month')
-    months = data.get('months')
-
-    if not fin_kod:
-        logger.error("Missing required field: fin_kod")
-        return jsonify({'error': 'fin_kod is required'}), 400
-
-    salary = Salary.query.filter_by(project_code=project_code, fin_kod=fin_kod).first()
-    if not salary:
-        return jsonify({'message': 'Salary record not found'}), 404
-
     try:
-        # Store old total before change
-        old_total_salary = salary.total_salary or 0
+        data = request.get_json(silent=True) or {}
+        project, werror = project_write_guard(project_code, respect_system_lock=True)
+        if werror:
+            return werror
 
-        # Update fields if provided
-        if salary_per_month is not None:
-            salary.salary_per_month = int(salary_per_month)
-        if months is not None:
-            salary.months = int(months)
+        fin_kod = data.get('fin_kod')
+        if not fin_kod:
+            return jsonify({'error': 'fin_kod is required'}), 400
 
-        # Recalculate total
-        salary.total_salary = salary.salary_per_month * salary.months
+        salary = Salary.query.filter_by(project_code=project_code, fin_kod=fin_kod).first()
+        if not salary:
+            return jsonify({'message': 'Salary record not found'}), 404
 
-        # Compute difference for main Smeta adjustment
-        new_total_salary = salary.total_salary or 0
-        difference = new_total_salary - old_total_salary
+        for field in ('salary_per_month', 'months'):
+            if field in data:
+                val = non_negative_number(data[field])
+                if val is None:
+                    return invalid_amount(field)
+                setattr(salary, field, val)
 
-        # Update main smeta total
-        main_smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
-        if not main_smeta:
-            logger.info(f"No main smeta found for project_code={project_code}, creating new one")
-            main_smeta = Smeta(project_code=str(project_code))
-            db.session.add(main_smeta)
-
-        if main_smeta.total_salary is None:
-            main_smeta.total_salary = 0
-
-        main_smeta.total_salary += difference
-
+        salary.total_salary = line_total(salary.salary_per_month, salary.months)
+        recompute_project_smeta(project_code)
         db.session.commit()
-        logger.debug(f"Updated Salary for fin_kod={fin_kod}, difference={difference}, "
-                     f"new total_smeta_salary={main_smeta.total_salary}")
-
         return jsonify({'message': 'Salary record updated', 'data': salary.salary_details()}), 200
 
-    except Exception as e:
+    except Exception:
+        db.session.rollback()
         logger.exception("Exception during salary update")
         return jsonify({'error': 'Internal server error'}), 500
+
 
 @salary_bp.route('/api/delete-salary/<int:project_code>', methods=['DELETE'])
 @limiter.limit("50 per second")
 @token_required([0, 2])
 def delete_salary(project_code):
-    wproj, werror = project_write_guard(project_code, respect_system_lock=True)
-    if werror:
-        return werror
-    fin_kod = request.args.get('fin_kod') or (request.get_json(silent=True) or {}).get('fin_kod')
-
-    query = Salary.query.filter_by(project_code=project_code)
-    if fin_kod:
-        query = query.filter_by(fin_kod=fin_kod)
-    salary = query.first()
-
-    if not salary:
-        return jsonify({'message': 'Salary record not found'}), 404
-
     try:
-        # Keep the aggregate Smeta.total_salary in sync (guard against None).
-        main_smeta = Smeta.query.filter_by(project_code=str(project_code)).first()
-        if main_smeta and main_smeta.total_salary is not None:
-            main_smeta.total_salary -= (salary.total_salary or 0)
+        project, werror = project_write_guard(project_code, respect_system_lock=True)
+        if werror:
+            return werror
+        fin_kod = request.args.get('fin_kod') or (request.get_json(silent=True) or {}).get('fin_kod')
+
+        query = Salary.query.filter_by(project_code=project_code)
+        if fin_kod:
+            query = query.filter_by(fin_kod=fin_kod)
+        salary = query.first()
+        if not salary:
+            return jsonify({'message': 'Salary record not found'}), 404
 
         db.session.delete(salary)
+        recompute_project_smeta(project_code)
         db.session.commit()
         return jsonify({'message': 'Salary record deleted'}), 200
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        return jsonify({'error': 'Internal server error'}), 400
+        logger.exception("Exception in delete_salary")
+        return jsonify({'error': 'Internal server error'}), 500
