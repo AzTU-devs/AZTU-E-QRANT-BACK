@@ -12,6 +12,7 @@ from utils.email_validation import (
 )
 from models.authModel import Auth
 from utils.identity import email_taken
+from utils.pdf_safety import rl_text
 from models.userModel import User
 from models.expertModel import Expert, EXPERT_ROLE
 from models.projectModel import Project
@@ -599,12 +600,12 @@ def project_assessments_pdf(project_code):
                                 leftMargin=28, rightMargin=28, topMargin=32, bottomMargin=28)
         elements = [
             Paragraph('Ekspert Qiymətləndirmə Hesabatı', title_style),
-            Paragraph(f"<b>Layihə:</b> {project.project_name or 'Adsız layihə'}", body_style),
+            Paragraph(f"<b>Layihə:</b> {rl_text(project.project_name or 'Adsız layihə')}", body_style),
             Paragraph(f"<b>Layihə kodu:</b> {project.project_code}", body_style),
         ]
         if lead:
             elements.append(Paragraph(
-                f"<b>Layihə rəhbəri:</b> {(lead.name or '')} {(lead.surname or '')}".strip(),
+                rl_text(f"Layihə rəhbəri: {(lead.name or '')} {(lead.surname or '')}".strip()),
                 body_style))
 
         if not rows:
@@ -621,8 +622,8 @@ def project_assessments_pdf(project_code):
             for assessment in rows:
                 expert = experts.get(assessment.expert)
                 name = expert.full_name() if expert else assessment.expert
-                elements.append(Paragraph(f'Ekspert: {name}', head_style))
-                elements.append(Paragraph(f'<b>E-poçt:</b> {assessment.expert}', body_style))
+                elements.append(Paragraph(rl_text(f'Ekspert: {name}'), head_style))
+                elements.append(Paragraph(f'<b>E-poçt:</b> {rl_text(assessment.expert)}', body_style))
 
                 data = [[
                     Paragraph('№', cell_bold),
@@ -634,10 +635,10 @@ def project_assessments_pdf(project_code):
                 for row in assessment.breakdown():
                     data.append([
                         Paragraph(str(row['number']), cell_style),
-                        Paragraph(row['title'], cell_style),
+                        Paragraph(rl_text(row['title']), cell_style),
                         Paragraph(str(row['max_score']), cell_style),
                         Paragraph('' if row['score'] is None else str(row['score']), cell_style),
-                        Paragraph(row['note'] or '', cell_style),
+                        Paragraph(rl_text(row['note']) if row['note'] else '', cell_style),
                     ])
                 data.append([
                     Paragraph('', cell_bold),
@@ -663,7 +664,7 @@ def project_assessments_pdf(project_code):
 
                 if assessment.note:
                     elements.append(Spacer(1, 6))
-                    elements.append(Paragraph(f'<b>Ümumi rəy:</b> {assessment.note}', body_style))
+                    elements.append(Paragraph(f'<b>Ümumi rəy:</b> {rl_text(assessment.note)}', body_style))
                 elements.append(Spacer(1, 10))
 
         doc.build(elements)

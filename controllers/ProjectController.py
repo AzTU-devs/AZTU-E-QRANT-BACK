@@ -18,6 +18,7 @@ from utils.access import (
     project_read_guard, is_admin, submitted_lock_error, deadline_error,
 )
 from utils.smeta import project_grand_total
+from utils.pdf_safety import rl_text
 from xml.sax.saxutils import escape as _xml_escape
 from utils.email_util import send_email
 from models.smetaModels.smetaModel import Smeta
@@ -134,20 +135,36 @@ def body_fin_error(fin_kod):
     return None
 
 
-def redact_project_for_caller(data):
-    """Strip other people's identifiers from a project row for non-admins.
-
-    Every signed-in user can browse this season's proposals, but the lead's FIN
-    code (a sensitive personal identifier), the assigned expert's address and
-    the FINs of the admins who returned/unlocked it are nobody else's business.
-    The caller's OWN FIN is kept so the UI can still recognise "my project".
+def minimal_project_card(project, lead=None):
+    """The public-to-participants view of a project (finding B-M3): just enough
+    for the browse-and-apply list, with none of the proposal body, budget,
+    internal flags or other people's identifiers. Full detail is reserved for
+    admins, the lead, approved members and the assigned expert.
     """
-    if is_admin():
-        return data
-    if data.get('fin_kod') != g.user.get('fin_kod'):
-        data['fin_kod'] = None
-    for key in ('expert', 'returned_by', 'edit_unlocked_by'):
-        data[key] = None
+    lead = lead if lead is not None else User.query.filter_by(fin_kod=project.fin_kod).first()
+    team_size = Collaborator.query.filter_by(project_code=project.project_code).count()
+    limit = project.collaborator_limit or 0
+    priotet = Priotet.query.filter_by(prioritet_code=project.priotet).first() if project.priotet else None
+    return {
+        'project_code': project.project_code,
+        'project_name': project.project_name,
+        'description': project.project_annotation or project.project_purpose,
+        'priotet_name': priotet.prioritet_name if priotet else None,
+        'winner': bool(project.winner),
+        'user': {'name': lead.name, 'surname': lead.surname} if lead else None,
+        'collaborator_limit': limit,
+        'current_collaborators': team_size,
+        'free_slots': max(0, limit - team_size),
+        # So the caller's own project is still recognisable in the list.
+        'is_mine': project.fin_kod == g.user.get('fin_kod'),
+    }
+
+
+def full_project_row(project):
+    """The full detail row (admins only), with the lead's display name attached."""
+    data = project.project_detail()
+    lead = User.query.filter_by(fin_kod=project.fin_kod).first()
+    data['user'] = {'name': lead.name, 'surname': lead.surname} if lead else None
     return data
 
 
@@ -586,20 +603,12 @@ def get_projects():
             current_app.logger.warning("No projects found in database")
             return handle_specific_not_found('No project found.')
 
+        # Admins get the full rows; everyone else gets the minimal browse card
+        # only (finding B-M3) — the full proposal, budget and internal flags of
+        # another lead's project are not theirs to read from the list.
+        admin = is_admin()
         for project in projects:
-            project_data = project.project_detail()
-            fin_kod = project_data.get('fin_kod')
-            user = User.query.filter_by(fin_kod=fin_kod).first()
-
-            if user:
-                project_data['user'] = {
-                    'name': user.name,
-                    'surname': user.surname
-                }
-            else:
-                project_data['user'] = None
-
-            project_list.append(redact_project_for_caller(project_data))
+            project_list.append(full_project_row(project) if admin else minimal_project_card(project))
 
         current_app.logger.info(f"Returning {len(project_list)} projects")
         return handle_success(project_list, 'Projects fetched successfully.')
@@ -1310,7 +1319,7 @@ def download_pdf(project_code):
         for idx, activity in enumerate(activities, start=1):
             row = [
                 Paragraph(str(idx), table_content_style),
-                Paragraph(activity.activity_name or "", table_content_style)
+                Paragraph(rl_text(activity.activity_name), table_content_style)
             ]
 
             # The model normalises "3", 3 and "3,4,5" alike, so every stored
@@ -1431,9 +1440,9 @@ def download_pdf(project_code):
     owner_row = None
     if project_owner_user:
         owner_row = [
-            Paragraph(str(project_owner_user.name), table_content_style),
-            Paragraph(str(project_owner_user.surname), table_content_style),
-            Paragraph(f"{project_owner_user.father_name} ({project_owner_user.fin_kod})", table_content_style),
+            Paragraph(rl_text(project_owner_user.name), table_content_style),
+            Paragraph(rl_text(project_owner_user.surname), table_content_style),
+            Paragraph(rl_text(f"{project_owner_user.father_name} ({project_owner_user.fin_kod})"), table_content_style),
             Paragraph(str(project_owner_salary), table_content_style)
         ]
 
@@ -1458,9 +1467,9 @@ def download_pdf(project_code):
             fin_kod = user.fin_kod if user and hasattr(user, "fin_kod") else "—"
             salary_total = salary_map.get(fin_kod, "—")
             collaborators_table_data.append([
-                Paragraph(str(name), table_content_style),
-                Paragraph(str(surname), table_content_style),
-                Paragraph(f"{father_name} ({fin_kod})", table_content_style),
+                Paragraph(rl_text(name), table_content_style),
+                Paragraph(rl_text(surname), table_content_style),
+                Paragraph(rl_text(f"{father_name} ({fin_kod})"), table_content_style),
                 Paragraph(str(salary_total), table_content_style)
             ])
     else:
@@ -1509,8 +1518,8 @@ def download_pdf(project_code):
         for idx, subject in enumerate(subject_smeta, start=1):
             table_data.append([
                 Paragraph(str(idx), table_content_style),
-                Paragraph(subject.equipment_name, table_content_style),
-                Paragraph(subject.unit_of_measure, table_content_style),
+                Paragraph(rl_text(subject.equipment_name), table_content_style),
+                Paragraph(rl_text(subject.unit_of_measure), table_content_style),
                 Paragraph(str(subject.price), table_content_style),
                 Paragraph(str(subject.quantity), table_content_style),
                 Paragraph(str(subject.total_amount), table_content_style)
@@ -1569,8 +1578,8 @@ def download_pdf(project_code):
         for idx, service in enumerate(service_smeta, start=1):
             table_data.append([
                 Paragraph(str(idx), table_content_style),
-                Paragraph(service.services_name, table_content_style),
-                Paragraph(service.unit_of_measure, table_content_style),
+                Paragraph(rl_text(service.services_name), table_content_style),
+                Paragraph(rl_text(service.unit_of_measure), table_content_style),
                 Paragraph(str(service.price), table_content_style),
                 Paragraph(str(service.quantity), table_content_style),
                 Paragraph(str(service.total_amount), table_content_style)
@@ -1630,8 +1639,8 @@ def download_pdf(project_code):
         for idx, rent in enumerate(rent_smeta, start=1):
             table_data.append([
                 Paragraph(str(idx), table_content_style),
-                Paragraph(rent.rent_area, table_content_style),
-                Paragraph(rent.unit_of_measure, table_content_style),
+                Paragraph(rl_text(rent.rent_area), table_content_style),
+                Paragraph(rl_text(rent.unit_of_measure), table_content_style),
                 Paragraph(str(rent.unit_price), table_content_style),
                 Paragraph(str(rent.quantity), table_content_style),
                 Paragraph(str(rent.duration), table_content_style),
@@ -1691,8 +1700,8 @@ def download_pdf(project_code):
         for idx, exp in enumerate(other_exps, start=1):
             table_data.append([
                 Paragraph(str(idx), table_content_style),
-                Paragraph(exp.expenses_name, table_content_style),
-                Paragraph(exp.unit_of_measure, table_content_style),
+                Paragraph(rl_text(exp.expenses_name), table_content_style),
+                Paragraph(rl_text(exp.unit_of_measure), table_content_style),
                 Paragraph(str(exp.unit_price), table_content_style),
                 Paragraph(str(exp.quantity), table_content_style),
                 Paragraph(str(exp.duration), table_content_style),
@@ -1754,8 +1763,8 @@ def download_pdf(project_code):
     ]
     # Second row: names
     sig_names = [
-        Paragraph(f"{left_name}", table_content_style),
-        Paragraph(f"{right_name}", table_content_style)
+        Paragraph(rl_text(left_name), table_content_style),
+        Paragraph(rl_text(right_name), table_content_style)
     ]
     # Third row: signature lines
     sig_lines = [

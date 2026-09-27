@@ -289,6 +289,12 @@ def _register_security(app, swagger_enabled=False):
 
 def main_app():
     load_dotenv()
+
+    # Forbid ReportLab from resolving remote image hosts in PDF markup — a blind
+    # SSRF vector if user text reaches a Paragraph (finding B-M1).
+    from utils.pdf_safety import harden_reportlab
+    harden_reportlab()
+
     app = Flask(__name__)
 
     # Behind nginx every request arrives from 127.0.0.1, so the rate limiter

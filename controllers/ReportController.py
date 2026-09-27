@@ -9,6 +9,7 @@ from extentions.db import db
 from config.limiter import limiter
 from utils.jwt_required import token_required
 from utils.access import project_read_guard, project_write_guard
+from utils.file_serving import serve_upload
 
 # Quarterly reports: the lead (or an admin) writes them; the lead, the team,
 # the assigned expert and admins read them. Writes are NOT archive-locked on
@@ -323,12 +324,8 @@ def download_report_file(file_id):
         if not os.path.exists(path):
             return jsonify({"error": "Fayl serverdə tapılmadı"}), 404
 
-        return send_file(
-            path,
-            as_attachment=True,
-            download_name=report_file.original_filename,
-            mimetype=report_file.content_type or 'application/octet-stream',
-        )
+        # Type from our stored extension, not the uploader-supplied Content-Type.
+        return serve_upload(path, report_file.stored_filename, report_file.original_filename)
 
     except Exception as e:
         logger.error(f"Error downloading report file: {str(e)}", exc_info=True)
