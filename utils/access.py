@@ -16,10 +16,13 @@ Each guard returns `(project, error)`; `error` is a ready-to-return Flask
 response tuple when the request must be refused, otherwise None.
 """
 
+from datetime import datetime
+
 from flask import g
 
 from models.projectModel import Project
 from models.collaboratorModel import Collaborator
+from models.competitionModel import Competition
 from models.expertModel import EXPERT_ROLE
 from models.systemLockModel import SystemLock
 from utils.archive_lock import project_is_archived, ARCHIVE_LOCKED_MESSAGE
@@ -29,6 +32,11 @@ ADMIN_ROLE = 2
 SYSTEM_LOCKED_MESSAGE = (
     'Sistem kilidlənib: smeta və fəaliyyət planı hazırda redaktə üçün bağlıdır.'
 )
+SUBMITTED_LOCKED_MESSAGE = (
+    'Layihə təqdim edilib və redaktə üçün bağlıdır. Dəyişiklik üçün administratordan '
+    'geri qaytarılmasını istəyin.'
+)
+DEADLINE_PASSED_MESSAGE = 'Müraciət müddəti bitib.'
 
 
 def caller_fin():
@@ -61,13 +69,16 @@ def load_project(project_code):
     return project, None
 
 
-def is_project_member(project, fin_kod=None):
+def is_project_member(project, fin_kod=None, approved_only=False):
     fin_kod = fin_kod or caller_fin()
     if not fin_kod:
         return False
-    return Collaborator.query.filter_by(
+    query = Collaborator.query.filter_by(
         project_code=project.project_code, fin_kod=fin_kod
-    ).first() is not None
+    )
+    if approved_only:
+        query = query.filter_by(approved=True)
+    return query.first() is not None
 
 
 def can_read_project(project):
@@ -80,7 +91,10 @@ def can_read_project(project):
         return True
     if caller_role() == EXPERT_ROLE:
         return (project.expert or '').strip().lower() == fin.strip().lower()
-    return is_project_member(project, fin)
+    # Only an APPROVED member sees the project's data. A pending/rejected
+    # applicant is not yet on the team and must not read salaries, budget,
+    # files or the dossier (finding B-H2).
+    return is_project_member(project, fin, approved_only=True)
 
 
 def can_write_project(project):
@@ -102,7 +116,34 @@ def system_locked():
     return bool(lock and lock.is_locked)
 
 
-def project_write_guard(project_code, check_archive=True, respect_system_lock=False):
+def submitted_lock_error(project):
+    """A lead may not edit a project once it is submitted, until an admin
+    returns it for corrections (finding B-L7). Admins are never held back.
+    Returns a ready-to-return error tuple, or None."""
+    if is_admin():
+        return None
+    if getattr(project, 'submitted', False):
+        return {'error': SUBMITTED_LOCKED_MESSAGE, 'status': 423}, 423
+    return None
+
+
+def deadline_error(project=None, competition_id=None):
+    """Refuse a lead's create/save/submit once the competition's application
+    deadline has passed (finding B-L7). Admins are exempt. A competition with no
+    deadline set is treated as open."""
+    if is_admin():
+        return None
+    cid = competition_id if competition_id is not None else getattr(project, 'competition_id', None)
+    if cid is None:
+        return None
+    competition = Competition.query.get(cid)
+    if competition and competition.application_deadline and datetime.utcnow() > competition.application_deadline:
+        return {'error': DEADLINE_PASSED_MESSAGE, 'status': 403}, 403
+    return None
+
+
+def project_write_guard(project_code, check_archive=True, respect_system_lock=False,
+                        respect_submit_lock=True):
     """Only the project's lead (or an admin) may change it.
 
     `check_archive` keeps an archived project read-only for its lead until an
@@ -113,6 +154,9 @@ def project_write_guard(project_code, check_archive=True, respect_system_lock=Fa
     `respect_system_lock` makes the admin's platform-wide lock (the switch on
     the Role Permissions screen) binding on the SERVER, not just in the UI, for
     the budget and activity-plan screens it was designed to close.
+
+    `respect_submit_lock` freezes the project for its lead once it is submitted
+    (finding B-L7); reports pass False so winners can keep reporting.
     """
     project, error = load_project(project_code)
     if error:
@@ -122,6 +166,10 @@ def project_write_guard(project_code, check_archive=True, respect_system_lock=Fa
     if not is_admin():
         if check_archive and project_is_archived(project) and not project.edit_unlocked:
             return None, ({'error': ARCHIVE_LOCKED_MESSAGE, 'status': 403}, 403)
+        if respect_submit_lock:
+            locked = submitted_lock_error(project)
+            if locked:
+                return None, locked
         if respect_system_lock and system_locked():
             return None, ({'error': SYSTEM_LOCKED_MESSAGE, 'status': 423}, 423)
     return project, None
