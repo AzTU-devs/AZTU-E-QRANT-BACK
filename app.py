@@ -141,12 +141,17 @@ def ensure_schema():
                 "ALTER TABLE auth ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"
             )
 
-    # OTPs are now stored as a SHA-256 hash, and the plaintext column is no
-    # longer written (finding B-L4).
+    # OTPs are now stored as a keyed hash, and the plaintext column is no
+    # longer written (finding B-L4). Each code records what it was issued for
+    # (signup or password reset) and how many wrong guesses it has taken.
     if 'otp' in inspector.get_table_names():
         otp_columns = {col['name']: col for col in inspector.get_columns('otp')}
         if 'otp_hash' not in otp_columns:
             statements.append("ALTER TABLE otp ADD COLUMN otp_hash VARCHAR(64)")
+        if 'purpose' not in otp_columns:
+            statements.append("ALTER TABLE otp ADD COLUMN purpose VARCHAR(20)")
+        if 'attempts' not in otp_columns:
+            statements.append("ALTER TABLE otp ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
         # Stop requiring the plaintext column so new rows can omit it.
         if 'otp' in otp_columns and not otp_columns['otp'].get('nullable', True):
             if db.engine.dialect.name == 'postgresql':
@@ -184,7 +189,8 @@ def ensure_schema():
 # `default_deny` below, which enforces that centrally.
 PUBLIC_ENDPOINTS = frozenset({
     'auth.signin',                   # obtains the token
-    'auth.signup',                   # registration (account still needs admin approval)
+    'auth.signup_send_otp',          # registration step 1: e-mails a code proving the address
+    'auth.signup',                   # registration step 2, gated by that code (then admin approval)
     'auth.send_otp',                 # forgotten password: e-mails a one-time code
     'auth.validate_otp',             # gated by the e-mailed one-time code
     'auth.reset_password',           # gated by the signed, single-use reset token

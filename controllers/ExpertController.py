@@ -78,11 +78,16 @@ def upsert_expert_account(expert):
     The account IS an `Auth` row keyed by the e-mail address, so an expert
     signs in through the same form as everyone else — the identifier field
     simply holds an address instead of a FIN. Returns the plaintext password,
-    which is only ever shown in the e-mail.
+    which is only ever shown in the e-mail — or None when the address already
+    keys somebody's lead/executor account (self-registrations are keyed by
+    their e-mail): re-roling that account would silently take away the
+    person's own access, so the caller must refuse the appointment instead.
     """
-    one_time_password = new_one_time_password()
-
     account = Auth.query.filter_by(fin_kod=expert.email).first()
+    if account is not None and account.project_role != EXPERT_ROLE:
+        return None
+
+    one_time_password = new_one_time_password()
     if not account:
         account = Auth(
             fin_kod=expert.email,
@@ -323,6 +328,13 @@ def set_expert():
         # A fresh one-time password every time the expert is appointed, so an
         # old mail cannot be replayed to get in.
         one_time_password = upsert_expert_account(expert)
+        if one_time_password is None:
+            db.session.rollback()
+            return {
+                'error': 'Bu e-poçt ünvanı layihə rəhbəri və ya icraçı hesabına aiddir; '
+                         'həmin ünvanla ekspert təyin edilə bilməz.',
+                'status': 409
+            }, 409
 
         lead = User.query.filter_by(fin_kod=project.fin_kod).first()
         html = render_template(

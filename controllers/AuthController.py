@@ -2,23 +2,24 @@ import re
 import secrets
 import logging
 import threading
+from sqlalchemy.exc import IntegrityError
 from werkzeug.security import generate_password_hash, check_password_hash
 from utils.email_validation import normalise_email, has_valid_syntax
-from utils.identity import resolve_account_by_email, resolve_profile, email_taken
-from models.otpModel import Otp
+from utils.identity import resolve_account_by_email, resolve_profile, email_taken, clean_person_name
+from utils.otp import issue_code, consume_code, discard_codes, notice_allowed, TTL_MINUTES as OTP_TTL_MINUTES
+from models.otpModel import PURPOSE_SIGNUP, PURPOSE_PASSWORD_RESET
 from models.authModel import Auth
 from models.expertModel import EXPERT_ROLE
+from models.institutionModel import Institution
 from config.limiter import limiter
 from flask_limiter.util import get_remote_address
-from flask_cors import cross_origin
 from models.userModel import db, User
 from utils.email_util import send_email
 from models.projectModel import  Project
 from models.competitionModel import Competition
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from utils.jwt_required import token_required
 from exceptions.exception import handle_creation
-from exceptions.exception import handle_conflict
 from exceptions.exception import handle_not_found
 from models.collaboratorModel import  Collaborator
 from exceptions.exception import handle_unauthorized
@@ -41,16 +42,23 @@ USER_TYPES = {0, 1, 2}
 # Roles an admin may assign from the role-management screen.
 ASSIGNABLE_ROLES = {0, 1, 2}
 MIN_PASSWORD_LENGTH = 8
-FIN_PATTERN = re.compile(r'^[A-Za-z0-9]{5,20}$')
+# Hashing cost grows with the input; nobody types more than this.
+MAX_PASSWORD_LENGTH = 128
+# A new signup's verified address becomes its account key (`Auth.fin_kod`,
+# VARCHAR(100)), so it has to fit there.
+MAX_SIGNUP_EMAIL_LENGTH = 100
 
-# One neutral signup response, whether or not the FIN/e-mail already exists, so
-# signup cannot be used to enumerate accounts (finding B-L2).
-GENERIC_SIGNUP_MESSAGE = "Qeydiyyat sorğunuz qəbul edildi."
+SIGNUP_MESSAGE = "Qeydiyyat sorğunuz qəbul edildi."
+
+# Same answer whether or not the address can be registered, so this endpoint
+# cannot be used to test which addresses have accounts (finding B-L2).
+SIGNUP_CODE_SENT = "Bu ünvan qeydiyyat üçün uyğundursa, təsdiq kodu göndərildi."
+INVALID_CODE = "Təsdiq kodu yanlışdır və ya vaxtı bitib."
 
 # One message for every sign-in failure, so the response never tells an
 # attacker whether an account exists, is pending, is blocked, or which of the
 # fields was wrong.
-SIGNIN_FAILED = "FIN kod / e-poçt və ya şifrə yanlışdır."
+SIGNIN_FAILED = "E-poçt və ya şifrə yanlışdır."
 
 # check_password against this when no account exists keeps the response time
 # the same either way (no user-enumeration by timing).
@@ -64,11 +72,35 @@ def _as_int(value):
         return None
 
 
+def _password_problem(password):
+    """None when the password meets the rules the sign-up and reset screens
+    show, otherwise why not. Enforced here so a direct API call cannot skip them."""
+    if not isinstance(password, str) or len(password) < MIN_PASSWORD_LENGTH:
+        return f"Şifrə ən azı {MIN_PASSWORD_LENGTH} simvol olmalıdır."
+    if len(password) > MAX_PASSWORD_LENGTH:
+        return f"Şifrə ən çox {MAX_PASSWORD_LENGTH} simvol ola bilər."
+    if not (re.search(r'[A-Z]', password) and re.search(r'[0-9]', password)
+            and re.search(r'[^A-Za-z0-9]', password)):
+        return "Şifrədə ən azı bir böyük hərf, bir rəqəm və bir xüsusi simvol olmalıdır."
+    return None
+
+
+def _signup_email(value):
+    """(normalised address, problem) for an address someone wants to register."""
+    email = normalise_email(value if isinstance(value, str) else '')
+    # The address becomes the account key, which the UI puts in URL paths; a
+    # '%' there would be decoded into a different key. No real mailbox needs it.
+    if not has_valid_syntax(email) or '%' in email:
+        return email, "E-poçt ünvanı düzgün formatda deyil."
+    if len(email) > MAX_SIGNUP_EMAIL_LENGTH:
+        return email, f"E-poçt ünvanı ən çox {MAX_SIGNUP_EMAIL_LENGTH} simvol ola bilər."
+    return email, None
+
+
 def _signin_identifier(data):
-    """The address typed on the sign-in form. `email` is the field; `fin_kod`
-    is still read for clients built before the switch, but only an ADDRESS is
-    accepted from either — sign-in by FIN code is no longer possible."""
-    return str(data.get('email') or data.get('fin_kod') or '').strip()
+    """The address typed on the sign-in form. Only an address is accepted —
+    sign-in by FIN code is not possible."""
+    return str(data.get('email') or '').strip()
 
 
 def _json_account_key():
@@ -86,133 +118,174 @@ def _json_account_ip_key():
     return 'acct:' + normalise_email(_signin_identifier(data)) + '|' + get_remote_address()
 
 
-def _otp_identifier():
-    """The account an OTP request targets, from the URL (legacy) or the JSON
-    body. Both spellings of one account collapse to one key."""
-    identifier = str((request.view_args or {}).get('fin_kod') or '')
-    if not identifier:
-        data = request.get_json(silent=True) or {}
-        identifier = str(data.get('identifier') or data.get('email') or data.get('fin_kod') or '')
-    return identifier
+def _body_email():
+    """The address an OTP request names, from the JSON body. `identifier` is
+    the older name of the same field; either way only an address is used."""
+    data = request.get_json(silent=True) or {}
+    value = data.get('email') or data.get('identifier')
+    return normalise_email(value if isinstance(value, str) else '')
 
 
-def _route_account_key():
-    identifier = _otp_identifier()
-    user, _ = resolve_profile(identifier)
-    return 'acct:' + (user.fin_kod.lower() if user else identifier.strip().lower())
+def _body_account_key():
+    """Per-account key for the password-reset endpoints: both of a person's
+    addresses collapse to their one account, so alternating between them does
+    not double the budget."""
+    email = _body_email()
+    user, _ = resolve_profile(email)
+    return 'acct:' + (user.fin_kod.lower() if user else email)
 
 
-# validate-otp reads the identifier from the body only.
-_body_account_key = _route_account_key
+def _signup_email_ip_key():
+    """Address + client IP. Keyed on the address alone, anyone could spend the
+    budget for somebody else's address and lock them out of registering; the
+    per-address caps that matter (one mail per minute, five guesses per code)
+    are enforced in the database instead — see utils/otp.py."""
+    return 'signup:' + _body_email() + '|' + get_remote_address()
+
+
+def _send_email_async(app, subject, recipient, html):
+    """Send a mail on a background thread so the endpoint's response time does
+    not depend on the SMTP round-trip — otherwise the delay itself would reveal
+    whether the account exists (finding B-L4 / B-L2 timing)."""
+    def _run():
+        with app.app_context():
+            try:
+                send_email(subject, recipient, html)
+            except Exception:
+                logger.exception("Background e-mail failed")
+    threading.Thread(target=_run, daemon=True).start()
+
+
+@auth_bp.route('/auth/signup/send-otp', methods=['POST'])
+@limiter.limit("5 per minute; 20 per hour")
+@limiter.limit("3 per 10 minutes", key_func=_signup_email_ip_key)
+def signup_send_otp():
+    """Registration, step 1: mail a code proving the address is the caller's.
+
+    The response is the same whether or not the address can be registered. A
+    free address gets the code; one that already has an account gets a notice
+    instead, so its owner learns someone tried and nobody else learns anything.
+    """
+    try:
+        email, problem = _signup_email(_body_email())
+        if problem:
+            return {"status": 400, "message": problem}, 400
+
+        app = current_app._get_current_object()
+        if email_taken(email):
+            logger.info("Signup code requested for an address that already has an account")
+            if notice_allowed(email):
+                html = render_template("email/signup_existing_account.html")
+                _send_email_async(app, "Qeydiyyat cəhdi", email, html)
+        else:
+            code = issue_code(email, PURPOSE_SIGNUP)
+            if code:
+                html = render_template("email/signup_otp.html", otp_code=code, ttl_minutes=OTP_TTL_MINUTES)
+                _send_email_async(app, "Qeydiyyat üçün təsdiq kodu", email, html)
+
+        return handle_success(None, SIGNUP_CODE_SENT)
+
+    except Exception:
+        db.session.rollback()
+        logger.exception("Unexpected error while sending a signup code")
+        return {"error": "Internal server error", "message": "Daxili server xetasi bas verdi."}, 500
 
 
 @auth_bp.route('/auth/signup', methods=['POST'])
 @limiter.limit("30 per hour")
+@limiter.limit("10 per 10 minutes", key_func=_signup_email_ip_key)
 def signup():
+    """Registration, step 2: the form together with the code from step 1.
+
+    The account is created only once the code proves the address belongs to
+    the person registering, and it is keyed by that address — no FIN code is
+    asked for. It still waits for an admin's approval before it can sign in.
+    """
     try:
         # Never log the request body here: it contains the plaintext password.
         data = request.get_json(silent=True) or {}
 
-        required_fields = [
-            'fin_kod', 
-            'password', 
-            'user_type',
-            'project_role',
-            'email',
-            'name',
-            'surname',
-            'father_name',
-            'institution_code'
-        ]
+        email, problem = _signup_email(data.get('email'))
+        if problem:
+            return {"status": 400, "message": problem}, 400
 
-        for field in required_fields:
-            if field not in data:
-                logger.warning("Missing field in request data: %s", field)
-                return handle_missing_field(400)
+        names = {}
+        for field in ('name', 'surname', 'father_name'):
+            names[field], problem = clean_person_name(data.get(field))
+            if problem:
+                return {"status": 400, "message": problem}, 400
 
-        fin_kod = data.get('fin_kod')
         password = data.get('password')
-        user_type = data.get('user_type')
-        project_role = data.get('project_role')
-        email = data.get('email')
-        name = data.get('name')
-        surname = data.get('surname')
-        father_name = data.get('father_name')
-        institution_code = data.get('institution_code')
-
-        if not all([fin_kod, password, user_type is not None, project_role is not None, email]):
-            logger.warning("One or more required fields are empty")
-            return handle_missing_field(400)
+        problem = _password_problem(password)
+        if problem:
+            return {"status": 400, "message": problem}, 400
 
         # Validate every value that ends up deciding privileges or identity.
-        project_role = _as_int(project_role)
-        user_type = _as_int(user_type)
+        project_role = _as_int(data.get('project_role'))
+        user_type = _as_int(data.get('user_type'))
         if project_role not in SELF_REGISTERABLE_ROLES:
             return {"status": 400, "message": "Yalnız layihə rəhbəri və ya icraçı kimi qeydiyyat mümkündür."}, 400
         if user_type not in USER_TYPES:
             return {"status": 400, "message": "İstifadəçi növü düzgün deyil."}, 400
-        if not isinstance(fin_kod, str) or not FIN_PATTERN.match(fin_kod):
-            return {"status": 400, "message": "FIN kod düzgün formatda deyil."}, 400
-        if not isinstance(password, str) or len(password) < MIN_PASSWORD_LENGTH:
-            return {"status": 400, "message": f"Şifrə ən azı {MIN_PASSWORD_LENGTH} simvol olmalıdır."}, 400
-        email = normalise_email(email)
-        if not has_valid_syntax(email):
-            return {"status": 400, "message": "E-poçt ünvanı düzgün formatda deyil."}, 400
 
-        # Account enumeration (finding B-L2): whether or not the FIN/e-mail is
-        # already taken, the caller gets the SAME generic response. A duplicate
-        # is logged and silently not created, so signup cannot be used to test
-        # which FINs or addresses are registered.
-        already_exists = (
-            email_taken(email)
-            or Auth.query.filter_by(fin_kod=fin_kod).first() is not None
-            or User.query.filter_by(fin_kod=fin_kod).first() is not None
-        )
-        if already_exists:
-            logger.info("Signup for an already-registered FIN/e-mail; returning generic response")
-            return handle_creation(GENERIC_SIGNUP_MESSAGE)
+        institution_code = str(data.get('institution_code') or '').strip()
+        if not institution_code or Institution.query.filter_by(institution_code=institution_code).first() is None:
+            return {"status": 400, "message": "Müəssisə düzgün seçilməyib."}, 400
 
+        # Spend the code only once the form itself is valid, so a typo in a
+        # name does not cost one of the limited guesses.
+        if not consume_code(email, PURPOSE_SIGNUP, data.get('otp')):
+            return {"status": 400, "message": INVALID_CODE}, 400
+
+        # The caller has just proved they own this address, so telling them it
+        # is taken reveals nothing. (No code is mailed for a taken address; this
+        # only catches a race with another registration.)
+        if email_taken(email):
+            db.session.rollback()
+            return {"status": 409, "message": "Bu e-poçt ünvanı ilə artıq hesab var. Daxil olun və ya şifrəni bərpa edin."}, 409
+
+        now = datetime.utcnow()
         auth_record = Auth(
-            fin_kod=fin_kod,
+            fin_kod=email,
             user_type=user_type,
             project_role=project_role,
             approved=False,
-            created_at=datetime.utcnow(),
-            blocked=0
+            created_at=now,
+            blocked=0,
+            otp_verificated=True,
         )
         auth_record.set_password(password)
 
         user_record = User(
-            name=name,
-            surname=surname,
-            father_name=father_name,
-            fin_kod=fin_kod,
+            name=names['name'],
+            surname=names['surname'],
+            father_name=names['father_name'],
+            fin_kod=email,
             profile_completed=0,
             personal_email=email,
             work_email=email,
-            created_at=datetime.utcnow(),
+            created_at=now,
             institution_code=institution_code
         )
 
-        logger.info("Adding new user and auth records to database")
         db.session.add(auth_record)
         db.session.add(user_record)
-        db.session.commit()
+        try:
+            db.session.commit()
+        except IntegrityError:
+            db.session.rollback()
+            return {"status": 409, "message": "Bu e-poçt ünvanı ilə artıq hesab var. Daxil olun və ya şifrəni bərpa edin."}, 409
 
-        subject = "Qeydiyyat"
-        recipient = email
+        template = ("email/coll_registration_template.html" if project_role == 1
+                    else "email/owner_registration_template.html")
+        html_content = render_template(template, project_role=project_role)
+        _send_email_async(current_app._get_current_object(), "Qeydiyyat", email, html_content)
 
-        if project_role == 1:
-            html_content = render_template("email/coll_registration_template.html", project_role=project_role)
-            send_email(subject, recipient, html_content)
-        elif project_role == 0:
-            html_content = render_template("email/owner_registration_template.html", project_role=project_role)
-            send_email(subject, recipient, html_content)
+        logger.info("User registered with a verified e-mail: account id %s", auth_record.id)
+        return handle_creation(SIGNUP_MESSAGE)
 
-        logger.info("User successfully registered")
-        return handle_creation(GENERIC_SIGNUP_MESSAGE)
-
-    except Exception as e:
+    except Exception:
+        db.session.rollback()
         logger.exception("An unexpected error occurred during signup")
         return {"error": "Internal server error", "message": "Daxili server xetasi bas verdi."}, 500
 
@@ -419,13 +492,26 @@ def get_app_wait_users():
 
         if not users:
             return handle_not_found(404)
-        
-        users_data = [
-            {
+
+        # Name and address let the admin see WHO is asking — new accounts are
+        # keyed by e-mail, older ones by FIN — and whether the address has been
+        # proved by an OTP (every registration since e-mail signup has).
+        profiles = {
+            p.fin_kod: p for p in
+            User.query.filter(User.fin_kod.in_([u.fin_kod for u in users])).all()
+        }
+        users_data = []
+        for user in users:
+            profile = profiles.get(user.fin_kod)
+            users_data.append({
                 "fin_kod": user.fin_kod,
-                "project_role": user.project_role
-            } for user in users
-        ]
+                "project_role": user.project_role,
+                "name": profile.name if profile else None,
+                "surname": profile.surname if profile else None,
+                "father_name": profile.father_name if profile else None,
+                "email": profile.personal_email if profile else None,
+                "email_verified": bool(user.otp_verificated),
+            })
         
         return handle_success(users_data, "Users fetched successfully.")
     
@@ -517,67 +603,33 @@ def reject_user(fin_kod):
         return {"error": "Internal server error", "message": "Daxili server xetasi bas verdi."}, 500
 
 
-OTP_LENGTH = 6
-OTP_TTL_MINUTES = 5
-
-
-def generateOtp(length: int = OTP_LENGTH) -> str:
-    # `secrets`, not `random`: the code is a credential and must not be predictable.
-    return ''.join(str(secrets.randbelow(10)) for _ in range(length))
-
-import pytz
-
-# Same answer whether or not the FIN exists, so this endpoint cannot be used to
-# test which FIN codes are registered.
+# Same answer whether or not the address has an account, so this endpoint
+# cannot be used to test which addresses are registered.
 OTP_SENT_MESSAGE = "OTP sent successfully"
 
 
-def _deliver_otp_async(app, subject, recipient, html):
-    """Send the OTP e-mail on a background thread so the endpoint's response
-    time does not depend on the SMTP round-trip — otherwise the delay itself
-    would reveal whether the account exists (finding B-L4 / B-L2 timing)."""
-    def _run():
-        with app.app_context():
-            try:
-                send_email(subject, recipient, html)
-            except Exception:
-                logger.exception("Background OTP e-mail failed")
-    threading.Thread(target=_run, daemon=True).start()
-
-
 @auth_bp.route("/auth/send-otp", methods=['POST'])
-@auth_bp.route("/auth/send-otp/<string:fin_kod>", methods=['POST'])
 @limiter.limit("5 per minute; 20 per hour")
-@limiter.limit("3 per 10 minutes", key_func=_route_account_key)
-def send_otp(fin_kod=None):
-    # The identifier (e-mail) is taken from the JSON body; the legacy path form
-    # is still accepted. Rate-limited per address AND per account. Always the
-    # same response, and the e-mail goes out on a background thread so timing
-    # cannot reveal whether the account exists (B-L2 / B-L4).
+@limiter.limit("3 per 10 minutes", key_func=_body_account_key)
+def send_otp():
+    # Forgotten password. The account is named by an e-mail address in the JSON
+    # body — never a FIN code, and never in the URL. Rate-limited per address
+    # AND per account. Always the same response, and the e-mail goes out on a
+    # background thread so timing cannot reveal whether the account exists
+    # (B-L2 / B-L4).
     try:
-        identifier = fin_kod or (request.get_json(silent=True) or {}).get('identifier') \
-            or (request.get_json(silent=True) or {}).get('email')
-        user, account = resolve_profile(identifier or '')
+        email = _body_email()
+        user, account = resolve_profile(email)
 
-        email = (user.work_email or user.personal_email) if user else None
-        if user and account and email:
-            otp = generateOtp()
-            issued_at = datetime.now(pytz.timezone("Asia/Baku"))
-            # Only the newest code is ever valid; store its hash, never the code.
-            Otp.query.filter_by(fin_kod=user.fin_kod).delete()
-            new_otp = Otp(
-                fin_kod=user.fin_kod,
-                issued_at=issued_at,
-                expires_at=issued_at + timedelta(minutes=OTP_TTL_MINUTES),
-            )
-            new_otp.set_code(otp)
-            db.session.add(new_otp)
-            db.session.commit()
-
-            html_content = render_template("email/otp_verification.html", name=user.name, otp_code=otp)
-            _deliver_otp_async(current_app._get_current_object(), "OTP", email, html_content)
+        if user and account:
+            code = issue_code(account.fin_kod, PURPOSE_PASSWORD_RESET)
+            if code:
+                html_content = render_template("email/otp_verification.html", name=user.name, otp_code=code)
+                # To the address that was typed: it is one of this account's
+                # own, and it is the inbox the person is about to check.
+                _send_email_async(current_app._get_current_object(), "OTP", email, html_content)
         else:
-            logger.info("OTP requested for an unknown or unreachable account")
+            logger.info("OTP requested for an unknown or ambiguous address")
 
         return handle_success(None, OTP_SENT_MESSAGE)
 
@@ -591,51 +643,23 @@ def send_otp(fin_kod=None):
 @limiter.limit("10 per minute; 50 per hour")
 @limiter.limit("5 per 15 minutes", key_func=_body_account_key)
 def validate_otp():
-    # The code is only 6 digits, so guesses are capped per address AND per
-    # account. Both the identifier and the code come from the JSON body — the
-    # code no longer travels in the URL, where nginx would log it (B-L4).
+    # The code is only 6 digits, so guesses are capped per address, per account
+    # and per code (in the database). Both the address and the code come from
+    # the JSON body — the code never travels in the URL, where nginx would log
+    # it (B-L4). Only a code mailed for a password reset is accepted here.
     invalid = ({"statusCode": 400, "message": "Invalid or expired OTP."}, 400)
     try:
         data = request.get_json(silent=True) or {}
-        identifier = data.get('identifier') or data.get('email') or data.get('fin_kod')
-        otp = data.get('otp')
-        if identifier is None or otp is None:
-            return invalid
-
-        user, account = resolve_profile(str(identifier))
+        user, account = resolve_profile(_body_email())
         if not user or not account:
             return invalid
-        fin_kod = user.fin_kod
 
-        sent_otp = (
-            Otp.query.filter(Otp.fin_kod == fin_kod)
-            .order_by(Otp.issued_at.desc())
-            .first()
-        )
-        if not sent_otp:
+        if not consume_code(account.fin_kod, PURPOSE_PASSWORD_RESET, data.get('otp')):
             return invalid
-
-        # `Otp.expires_at` is DateTime(timezone=True), so Postgres hands it back
-        # tz-aware — comparing it with a naive utcnow() raises TypeError.
-        now_utc = datetime.now(timezone.utc)
-        otp_expiry = sent_otp.expires_at
-        if otp_expiry.tzinfo is None:
-            otp_expiry = otp_expiry.replace(tzinfo=timezone.utc)
-
-        if now_utc > otp_expiry:
-            Otp.query.filter_by(fin_kod=fin_kod).delete()
-            db.session.commit()
-            return invalid
-
-        # Constant-time comparison against the stored SHA-256 (never plaintext).
-        if not sent_otp.matches(str(otp).strip()):
-            return invalid
-
         # Single use: the code dies the moment it is accepted.
-        Otp.query.filter_by(fin_kod=fin_kod).delete()
         db.session.commit()
 
-        token = encode_otp_token(user.fin_kod, account.password_hash)
+        token = encode_otp_token(account.fin_kod, account.password_hash)
         return handle_success(token, "OTP validated successfully.")
 
     except Exception:
@@ -667,11 +691,12 @@ def reset_password():
         ):
             return handle_unauthorized(401, "Invalid or expired token.")
 
-        if not isinstance(password, str) or len(password) < MIN_PASSWORD_LENGTH:
-            return {"status": 400, "message": f"Şifrə ən azı {MIN_PASSWORD_LENGTH} simvol olmalıdır."}, 400
+        problem = _password_problem(password)
+        if problem:
+            return {"status": 400, "message": problem}, 400
 
         user_auth.set_password(password)
-        Otp.query.filter_by(fin_kod=user_auth.fin_kod).delete()
+        discard_codes(user_auth.fin_kod, PURPOSE_PASSWORD_RESET)
         db.session.commit()
 
         return handle_success(None, "Password reseted successfully.")

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="UTF-8">
+    <title>Qeydiyyat üçün təsdiq kodu</title>
+</head>
+
+<body style="font-family: Arial, sans-serif; background-color: #f4f4f4; padding: 20px;">
+    <div style="max-width: 600px; margin: auto; background-color: #ffffff; padding: 20px; border-radius: 5px;">
+        <h2 style="color: #333333;">Salam!</h2>
+        <p style="color: #666666;">
+            AzTU E-Qrant sistemində qeydiyyatı tamamlamaq üçün bu e-poçt ünvanının sizə məxsus olduğunu təsdiqləyin.
+            Qeydiyyat formasına aşağıdakı kodu daxil edin:
+        </p>
+        <h1 style="text-align: center; letter-spacing: 5px; font-size: 24px; color: #333333; margin: 20px 0;">
+            {{ otp_code }}
+        </h1>
+        <p style="color: #666666;">
+            Bu kod yalnız {{ ttl_minutes }} dəqiqə ərzində etibarlıdır və yalnız bir dəfə istifadə oluna bilər.
+            Kodu heç kimlə paylaşmayın.
+        </p>
+        <p style="color: #666666;">
+            Əgər qeydiyyat üçün müraciət etməmisinizsə, bu e-poçtu nəzərə almayın — kod olmadan bu ünvanla hesab yaradıla bilməz.
+        </p>
+        <hr>
+        <p style="font-size: 12px; color: #aaaaaa;">AZTU Daxili Qrant Müsabiqəsi. Bütün hüquqlar qorunur.</p>
+    </div>
+</body>
+
+</html>

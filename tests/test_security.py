@@ -34,6 +34,8 @@ from app import main_app
 from config.limiter import limiter
 import controllers.AuthController as AC
 AC.send_email = fake_send
+# Deliver the "background" mails inline so the codes can be read from SENT.
+AC._send_email_async = lambda app, subject, recipient, html: fake_send(subject, recipient, html)
 import controllers.ProjectController as PC
 class _NoNet:
     @staticmethod
@@ -70,6 +72,8 @@ from models.userModel import User
 from models.projectModel import Project
 from models.collaboratorModel import Collaborator
 from models.competitionModel import Competition
+from models.institutionModel import Institution
+from models.otpModel import Otp, PURPOSE_SIGNUP
 from models.systemLockModel import SystemLock
 from models.projectActivities import ProjectActivities
 from utils.jwt_util import encode_auth_token, encode_expert_token, encode_otp_token
@@ -118,6 +122,7 @@ with app.app_context():
     db.session.add(Collaborator(project_code=11111111, fin_kod="PENDX01", competition_id=comp.id, approved=False))
     db.session.add(ProjectActivities(project_code=11111111, month=3, months="3", activity_name="x"))
     db.session.add(SystemLock(is_locked=False))
+    db.session.add(Institution(institution_code="1", institution_name="AzTU", created_at=now))
     db.session.commit()
     def _aid(fin):
         return Auth.query.filter_by(fin_kod=fin).first().id
@@ -222,18 +227,160 @@ with app.app_context():
     dead = encode_auth_token(block_id, "BLOCK01", 1, 0)
 check(c.get("/api/notifications", headers={"Authorization":f"Bearer {dead}"}).status_code==401, "blocked user's token rejected")
 
-# ---- signup rejects self-assigned elevated role & duplicate email ----
-check(c.post("/auth/signup", json={"fin_kod":"NEWU0001","password":"Passw0rd!","user_type":0,
-      "project_role":2,"email":"new@aztu.edu.az","name":"n","surname":"s","father_name":"f",
-      "institution_code":"1"}).status_code==400, "signup refuses project_role=2")
-# B-L2: a duplicate e-mail gets the SAME generic response as a new signup
-# (no 409), and no second account is created for it.
-dup = c.post("/auth/signup", json={"fin_kod":"NEWU0002","password":"Passw0rd!","user_type":0,
-      "project_role":0,"email":"leada@aztu.edu.az","name":"n","surname":"s","father_name":"f",
-      "institution_code":"1"})
-check(dup.status_code in (200,201), "duplicate-email signup returns generic success (no enumeration)")
+# ---- e-mail signup: the address is proved by an OTP; no FIN is asked for ----
+def mails_to(addr):
+    return [m for m in SENT if m[1] == addr]
+def last_code(addr):
+    found = re.findall(r">\s*(\d{6})\s*<", mails_to(addr)[-1][2]) if mails_to(addr) else []
+    return found[0] if found else None
+def signup(**over):
+    body = {"email":"new@aztu.edu.az","password":"Passw0rd!","user_type":0,"project_role":0,
+            "name":"Nərmin","surname":"Əliyeva","father_name":"Rəşad","institution_code":"1"}
+    body.update(over)
+    return c.post("/auth/signup", json=body)
+
+# B-L2: step 1 answers the same for a free and a registered address.
+free = c.post("/auth/signup/send-otp", json={"email":"New@AzTU.edu.az "})
+taken = c.post("/auth/signup/send-otp", json={"email":"leada@aztu.edu.az"})
+check(free.status_code==200 and taken.status_code==200, "signup send-otp is public and returns 200")
+check(free.get_json()==taken.get_json(), "signup send-otp: same body for free and registered address (no enumeration)")
+check(last_code("new@aztu.edu.az") is not None, "signup code mailed to the (normalised) address")
+check(mails_to("leada@aztu.edu.az") and last_code("leada@aztu.edu.az") is None,
+      "registered address gets a notice, not a code")
 with app.app_context():
-    check(Auth.query.filter_by(fin_kod="NEWU0002").first() is None, "duplicate-email signup creates no account")
+    check(Otp.query.filter_by(fin_kod="leada@aztu.edu.az", purpose=PURPOSE_SIGNUP).first() is None,
+          "no signup code exists for a registered address")
+    stored = Otp.query.filter_by(fin_kod="new@aztu.edu.az", purpose=PURPOSE_SIGNUP).first()
+    check(stored is not None and stored.otp is None and last_code("new@aztu.edu.az") not in (stored.otp_hash or ""),
+          "signup code stored only as a hash")
+check(c.post("/auth/signup/send-otp", json={"email":"not-an-address"}).status_code==400, "signup send-otp rejects a malformed address")
+check(c.post("/auth/signup/send-otp", json={"email":("a"*96)+"@x.az"}).status_code==400, "signup send-otp rejects an address too long to be a key")
+before = len(mails_to("new@aztu.edu.az"))
+c.post("/auth/signup/send-otp", json={"email":"new@aztu.edu.az"})
+check(len(mails_to("new@aztu.edu.az"))==before, "resend inside the cooldown mails nothing")
+
+code = last_code("new@aztu.edu.az")
+wrong = "000000" if code != "000000" else "111111"
+check(signup(otp=code, project_role=2).status_code==400, "signup refuses project_role=2")
+check(signup(otp=code, name="<img src=x onerror=alert(1)>").status_code==400, "signup refuses markup in a name")
+check(signup(otp=code, password="password").status_code==400, "signup enforces the password rules server-side")
+check(signup(otp=code, institution_code="nope").status_code==400, "signup refuses an unknown institution")
+with app.app_context():
+    check(Otp.query.filter_by(fin_kod="new@aztu.edu.az").first().attempts==0,
+          "invalid form fields do not spend a code guess")
+check(signup().status_code==400, "signup without a code is refused")
+check(signup(otp=wrong).status_code==400, "signup with a wrong code is refused")
+r = signup(otp=code, fin_kod="HACK001", email="NEW@aztu.edu.az")
+check(r.status_code==201, f"signup with the right code creates the account (got {r.status_code} {r.get_json()})")
+with app.app_context():
+    acct = Auth.query.filter_by(fin_kod="new@aztu.edu.az").first()
+    prof = User.query.filter_by(fin_kod="new@aztu.edu.az").first()
+    check(acct is not None and prof is not None, "new account is keyed by its verified e-mail")
+    check(Auth.query.filter_by(fin_kod="HACK001").first() is None, "a FIN sent to signup is ignored")
+    check(acct.otp_verificated and not acct.approved, "new account is e-mail-verified and awaits approval")
+    check(prof.personal_email=="new@aztu.edu.az" and prof.name=="Nərmin", "profile holds the verified address and name")
+    check(Otp.query.filter_by(fin_kod="new@aztu.edu.az").first() is None, "signup code is single-use")
+check(signup(otp=code).status_code==400, "a spent signup code cannot create a second account")
+
+# Guessing is capped per code in the database, whatever the rate limiter does.
+c.post("/auth/signup/send-otp", json={"email":"guess@aztu.edu.az"})
+good = last_code("guess@aztu.edu.az")
+bad = "000000" if good != "000000" else "111111"
+for _ in range(5):
+    signup(email="guess@aztu.edu.az", otp=bad)
+check(signup(email="guess@aztu.edu.az", otp=good).status_code==400, "code is destroyed after 5 wrong guesses")
+
+# A code is only good for the purpose it was mailed for.
+with app.app_context():
+    from utils.otp import issue_code
+    cross = issue_code("LEADA01", PURPOSE_SIGNUP)
+check(c.post("/auth/validate-otp", json={"email":"leada@aztu.edu.az","otp":cross}).status_code==400,
+      "a signup code cannot be spent on a password reset")
+
+# The admin sees who is waiting; after approval the person signs in by e-mail.
+pending = c.get("/auth/app-wait-users", headers=H("admin")).get_json()["data"]
+row = next((p for p in pending if p["fin_kod"]=="new@aztu.edu.az"), None)
+check(row and row["name"]=="Nərmin" and row["email"]=="new@aztu.edu.az" and row["email_verified"],
+      "pending list shows name, address and verification")
+check(signin("new@aztu.edu.az").status_code==401, "unapproved signup cannot sign in")
+check(c.post("/auth/app-user/new@aztu.edu.az", headers=H("admin")).status_code==200, "admin approves the e-mail-keyed account")
+r = signin("new@aztu.edu.az")
+check(r.status_code==200 and r.get_json()["data"]["auth"]["fin_kod"]=="new@aztu.edu.az", "approved signup signs in by e-mail")
+newtok_signup = r.get_json().get("token")
+
+# The verified address cannot be swapped for an unverified one afterwards.
+import io
+from PIL import Image as _Img
+_png = io.BytesIO(); _Img.new("RGB", (2, 2)).save(_png, "PNG")
+profile_form = {k: "x" for k in ["born_place","living_location","home_phone","personal_mobile_number",
+    "citizenship","personal_id_number","sex","work_place","department","duty","main_education",
+    "additonal_education","scientific_degree","scientific_name","work_location","work_phone"]}
+profile_form.update({"fin_kod":"new@aztu.edu.az","personal_email":"attacker@evil.az","work_email":"new.work@aztu.edu.az",
+    "scientific_date":"2020-01-01","scientific_name_date":"2020-01-01","born_date":"1990-01-01",
+    "image": (io.BytesIO(_png.getvalue()), "p.png")})
+r = c.post("/api/approve/profile", data=profile_form, content_type="multipart/form-data",
+           headers={"Authorization": f"Bearer {newtok_signup}"})
+check(r.status_code==200, f"new account completes its profile (got {r.status_code})")
+with app.app_context():
+    check(User.query.filter_by(fin_kod="new@aztu.edu.az").first().personal_email=="new@aztu.edu.az",
+          "completing the profile cannot replace the verified address")
+check(c.put("/api/profile/LEADA01/edit", json={"name":"<b>x</b>"}, headers=H("leadA")).status_code==400,
+      "profile edit refuses markup in a name")
+# Older profiles may hold names the new rule rejects ("LEADA01" has digits);
+# saving an unrelated field with the name sent back unchanged must still work.
+check(c.put("/api/profile/LEADA01/edit", json={"name":"LEADA01","father_name":"F","duty":"Dosent"},
+            headers=H("leadA")).status_code==200, "profile edit keeps an unchanged legacy name")
+
+# An address reserved for an expert (created, not yet appointed, so no login
+# yet) cannot be self-registered — the appointment would land on that account.
+from models.expertModel import Expert
+with app.app_context():
+    db.session.add(Expert(email="prof@aztu.edu.az", name="P", surname="R", father_name="F",
+                          personal_id_serial_number="AA0000001", email_verified=True))
+    db.session.commit()
+c.post("/auth/signup/send-otp", json={"email":"prof@aztu.edu.az"})
+check(mails_to("prof@aztu.edu.az") and last_code("prof@aztu.edu.az") is None,
+      "an expert's address gets the existing-account notice, not a code")
+# And an appointment never re-roles somebody's lead/executor account keyed by
+# the same address (e.g. one registered before this guard existed).
+with app.app_context():
+    db.session.add(Expert(email="dual@aztu.edu.az", name="D", surname="U", father_name="F",
+                          personal_id_serial_number="AA0000002", email_verified=True))
+    person("dual@aztu.edu.az", 1, "dual@aztu.edu.az")
+    db.session.commit()
+r = c.post("/api/set-expert", json={"email":"dual@aztu.edu.az","project_code":22222222}, headers=H("admin"))
+check(r.status_code==409, f"appointing an expert refuses to re-role a lead/executor account (got {r.status_code})")
+with app.app_context():
+    dual = Auth.query.filter_by(fin_kod="dual@aztu.edu.az").first()
+    check(dual.project_role==1 and dual.check_password("Passw0rd!"), "the executor keeps their role and password")
+    check(Project.query.filter_by(project_code=22222222).first().expert != "dual@aztu.edu.az",
+          "the refused appointment is not recorded on the project")
+
+# Notices to a registered address obey the same resend cooldown as codes.
+before = len(mails_to("leadd@aztu.edu.az"))
+c.post("/auth/signup/send-otp", json={"email":"leadd@aztu.edu.az"})
+c.post("/auth/signup/send-otp", json={"email":"leadd@aztu.edu.az"})
+check(len(mails_to("leadd@aztu.edu.az"))==before+1, "a second notice inside the cooldown is not mailed")
+# '%' would be URL-decoded into a different key wherever the UI builds a path.
+check(c.post("/auth/signup/send-otp", json={"email":"a%bc@aztu.edu.az"}).status_code==400,
+      "signup refuses an address containing '%'")
+
+# Nothing is reachable by FIN code any more.
+check(c.post("/auth/send-otp/LEADA01").status_code==404, "old send-otp/<fin> URL removed")
+before = len(mails_to("leada@aztu.edu.az"))
+check(c.post("/auth/send-otp", json={"identifier":"LEADA01"}).status_code==200, "send-otp by FIN answers generically")
+check(len(mails_to("leada@aztu.edu.az"))==before, "send-otp by FIN mails nothing")
+check(c.post("/auth/signin", json={"fin_kod":"leada@aztu.edu.az","password":"Passw0rd!","user_type":0}).status_code!=200,
+      "sign-in needs the `email` field")
+
+# Forgotten password end to end, by e-mail: the code is single-use.
+c.post("/auth/send-otp", json={"email":"leadb@aztu.edu.az"})
+rcode = last_code("leadb@aztu.edu.az")
+r = c.post("/auth/validate-otp", json={"email":"leadb@aztu.edu.az","otp":rcode})
+check(r.status_code==200 and r.get_json().get("data"), "valid reset code yields a reset token")
+check(c.post("/auth/validate-otp", json={"email":"leadb@aztu.edu.az","otp":rcode}).status_code==400, "reset code is single-use")
+check(c.post("/auth/reset-password", json={"token":r.get_json()["data"],"password":"weakpassword"}).status_code==400,
+      "reset enforces the password rules")
 
 # ---- reset token is single-use / bound to password (uses a throwaway acct) ----
 with app.app_context():

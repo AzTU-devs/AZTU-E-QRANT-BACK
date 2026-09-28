@@ -14,7 +14,7 @@ from exceptions.exception import handle_success
 from exceptions.exception import handle_not_found
 from exceptions.exception import handle_missing_field
 from exceptions.exception import handle_global_exception
-from utils.identity import email_taken
+from utils.identity import email_taken, clean_person_name
 from utils.email_validation import normalise_email, has_valid_syntax
 
 logging.basicConfig(level=logging.INFO)
@@ -107,6 +107,19 @@ def edit_user_details(fin_kod):
                 return {'error': problem, 'status': 400}, 400
             data['work_email'] = normalise_email(data['work_email'])
 
+        for field in ('name', 'surname', 'father_name'):
+            if field not in data:
+                continue
+            # Only a CHANGED name is checked: profiles created before the rule
+            # may hold names it would reject, and saving an unrelated field
+            # (the edit form sends every field) must not fail on them.
+            if (data[field] or '') == (getattr(user, field) or ''):
+                del data[field]
+                continue
+            data[field], problem = clean_person_name(data[field])
+            if problem:
+                return {'error': problem, 'status': 400}, 400
+
         for field in editable_fields:
             if field in data:
                 if field in ["scientific_date", "scientific_name_date", "born_date"] and data[field]:
@@ -192,9 +205,20 @@ def complete_profile():
         if g.user.get('role') != 2 and g.user.get('fin_kod') != target_fin:
             return {'error': 'You can only complete your own profile.', 'status': 403}, 403
 
+        fin_kod = target_fin
+        user = User.query.filter_by(fin_kod=fin_kod).first()
+
+        if not user:
+            return handle_not_found(404)
+
+        # The address given at registration was proved by an OTP and is what
+        # the person signs in with; it is kept. Only a profile that has none
+        # (created before signup collected one) takes it from the form.
+        personal_email = user.personal_email or data.get('personal_email')
+
         required_fields = [
             'born_place',
-            'living_location', 'home_phone', 'personal_mobile_number', 'personal_email',
+            'living_location', 'home_phone', 'personal_mobile_number',
             'citizenship', 'personal_id_number', 'sex', 'work_place', 'department',
             'duty', 'main_education', 'additonal_education', 'scientific_degree',
             'scientific_date', 'scientific_name', 'scientific_name_date',
@@ -205,6 +229,8 @@ def complete_profile():
             if not data.get(field):
                 logger.warning(f"Missing required field: {field}")
                 return handle_missing_field(404)
+        if not personal_email:
+            return handle_missing_field(404)
 
         image_file = request.files.get('image')
 
@@ -220,23 +246,17 @@ def complete_profile():
         if len(image_bytes) > current_app.config['MAX_PROFILE_IMAGE_SIZE'] or not _is_real_image(image_bytes):
             return {'error': 'The uploaded file is not a valid image (max 5 MB).', 'status': 400}, 400
 
-        for email_field in ('personal_email', 'work_email'):
-            problem = _email_error(data.get(email_field), target_fin)
+        for address in (personal_email, data.get('work_email')):
+            problem = _email_error(address, target_fin)
             if problem:
                 return {'error': problem, 'status': 400}, 400
 
-        fin_kod = target_fin
-        user = User.query.filter_by(fin_kod=fin_kod).first()
-
-        if not user:
-            return handle_not_found(404)
-        
         user.image = image_bytes
         user.born_place = data.get('born_place')
         user.living_location = data.get('living_location')
         user.home_phone = data.get('home_phone')
         user.personal_mobile_number = data.get('personal_mobile_number')
-        user.personal_email = normalise_email(data.get('personal_email'))
+        user.personal_email = normalise_email(personal_email)
         user.citizenship = data.get('citizenship')
         user.personal_id_number = data.get('personal_id_number')
         user.sex = data.get('sex')
@@ -253,7 +273,7 @@ def complete_profile():
         user.work_phone = data.get('work_phone')
         user.work_email = normalise_email(data.get('work_email'))
         user.profile_completed = 1
-        user.born_date = data.get('born_date')
+        user.born_date = datetime.strptime(data.get('born_date'), '%Y-%m-%d')
 
         db.session.commit()
 
